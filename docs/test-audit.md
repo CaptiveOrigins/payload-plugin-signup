@@ -2,6 +2,20 @@
 
 Kept by this repo's owning session, per `~/Code/CLAUDE.md`, "Test self-audits". Newest first.
 
+## 2026-11-10: second audit, after the security read
+
+Plugin Security's two required fixes changed the flow (the password is chosen when confirming; `access.manage` is required). Tests rewritten to match, and these added:
+
+- Refusing to start without `access.manage`.
+- Asking with someone else's address gives the asker nothing; the owner's password is the only one that works.
+- An address that got an account (an invitation) between asking and confirming: nothing new is made.
+- A signed-in member who isn't staff can't read the queue or the settings, change the mode, or decide a request.
+- `signupStatus` shown only to the account and to staff; checks' `userData` never shown in the queue.
+- A request with no network address counts under "unknown".
+- The confirm page asks for the password twice; a mismatch keeps the form and makes nothing.
+
+28 tests.
+
 ## 2026-11-10: first audit, before 0.1.0
 
 What the README promises, and the test that proves each:

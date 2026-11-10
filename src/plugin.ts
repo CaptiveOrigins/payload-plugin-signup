@@ -20,10 +20,9 @@ const lockedMode = (forced: SignupPluginOptions['forceMode']): SignupMode | null
  * that isn't active.
  */
 export const signupPlugin =
-  (options: SignupPluginOptions = {}): Plugin =>
+  (options: SignupPluginOptions): Plugin =>
   (config: Config): Config => {
     const users = options.users ?? config.admin?.user ?? 'users'
-    const signedIn: Access = ({ req }) => Boolean(req.user && req.user.collection === users)
     const o: ResolvedSignup = {
       users,
       requests: options.slugs?.requests ?? 'signup-requests',
@@ -39,7 +38,7 @@ export const signupPlugin =
       limits: { address: 5, email: 3, site: 200, verify: 20, ...options.limits },
       clientAddress: options.clientAddress ?? firstAddress,
       verifyHuman: options.verifyHuman,
-      manage: options.access?.manage ?? signedIn,
+      manage: options?.access?.manage as Access,
       scopeField: options.scopeField,
       scopeFor: options.scopeFor,
       retentionDays: options.retentionDays ?? 90,
@@ -48,6 +47,8 @@ export const signupPlugin =
       forceMode: lockedMode(options.forceMode),
       adminGroup: options.adminGroup ?? 'Sign-up',
     }
+    // Fail closed: without it, every signed-in member (children included) could read and decide the queue.
+    if (typeof o.manage !== 'function') throw new Error('Sign-up: give `access.manage`, saying who may see and decide sign-up requests and change the mode.')
     if (o.scopeField && !o.scopeFor) throw new Error('Sign-up: with `scopeField`, give `scopeFor` so each request knows its site.')
 
     const collections = config.collections ?? []
@@ -59,7 +60,7 @@ export const signupPlugin =
 
     const withStatus: CollectionConfig = {
       ...auth,
-      fields: [...auth.fields, signupStatusField()],
+      fields: [...auth.fields, signupStatusField(o)],
       hooks: {
         ...auth.hooks,
         // Accounts come through sign-up (or from staff and the site's own code), never from a signed-out API call,
@@ -77,7 +78,7 @@ export const signupPlugin =
           ({ user }) => {
             const status = (user as { signupStatus?: string }).signupStatus ?? 'active'
             if (status === 'active') return user
-            throw new APIError(status === 'pending' ? 'Your account is waiting for approval. We\'ll email you when it\'s ready.' : 'This account can\'t sign in yet. Check your email for the link to confirm your address.', 403, { code: `signup-${status}` }, true)
+            throw new APIError(status === 'pending' ? 'Your account is waiting for approval. We\'ll email you when it\'s ready.' : 'This account can\'t sign in yet.', 403, { code: `signup-${status}` }, true)
           },
           ...(auth.hooks?.beforeLogin ?? []),
         ],

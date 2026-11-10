@@ -82,7 +82,6 @@ const urls = (payload: Payload) => {
 
 export type SignupInput = {
   email?: unknown
-  password?: unknown
   /** The request's details, checked against the site's `fields` and kept with the request. */
   details?: unknown
   /** Answers only the site's checks see, never stored (for example a birth month and year for an age gate). */
@@ -91,9 +90,12 @@ export type SignupInput = {
 }
 
 /**
- * Take a sign-up request. Refusals the person can act on (mode, a bad email or password, a site check,
- * too many tries) throw a `SignupError`. Everything else ends in the same `{ ok: true }` and an email,
- * whether the address is new, already has an account, or is already waiting: the form never tells.
+ * Take a sign-up request. No account and no password yet: the account is made when the address's owner confirms
+ * and chooses a password (`verifySignup`), so nobody can set up an account under someone else's address.
+ *
+ * Refusals the person can act on (mode, a bad email, a site check, too many tries) throw a `SignupError`.
+ * Everything else ends in the same `{ ok: true }` and an email, whether the address is new, already has an
+ * account, or is already waiting: the form never tells. Each case does the same lookups.
  */
 export async function submitSignup(payload: Payload, input: SignupInput, req: Req = {}): Promise<{ ok: true; message: string }> {
   const o = signupOf(payload)
@@ -111,14 +113,12 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
     }
     if (!human) throw new SignupError('human', 'Please confirm you\'re a person, then try again.')
   }
-  if (!(await allowed(payload, 'site', 'all', r)) || (address && !(await allowed(payload, 'address', address, r))))
+  // Without a known address, every such request shares one "unknown" count rather than skipping the limit.
+  if (!(await allowed(payload, 'site', 'all', r)) || !(await allowed(payload, 'address', address ?? 'unknown', r)))
     throw new SignupError('busy', 'Too many sign-up requests right now. Please try again in an hour.', 429)
 
   const email = normalizeEmail(input.email)
   if (!validEmail(email)) throw new SignupError('email', 'Please enter a valid email address.')
-  const password = typeof input.password === 'string' ? input.password : ''
-  if (password.length < o.minPasswordLength) throw new SignupError('password', `Please choose a password of at least ${o.minPasswordLength} characters.`)
-  if (password.length > 256) throw new SignupError('password', 'Please choose a password of 256 characters or fewer.')
   const asObject = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
   const details = asObject(input.details)
   const answers = asObject(input.answers)
@@ -142,37 +142,33 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
   const scope = o.scopeField ? await (o.scopeFor?.(r) ?? null) : null
   if (o.scopeField && (scope === null || scope === undefined)) throw new SignupError('closed', 'Sign-up is closed for now.', 403)
 
-  // Per-address-of-email limit: past it, quietly do nothing (the same answer as any other request).
+  // Per-email limit: past it, quietly do nothing (the same answer as any other request).
   if (!(await allowed(payload, 'email', email, r))) return { ok: true, message: RECEIVED }
 
   const token = newToken()
   const outcome = await transaction(payload, r, async (tx) => {
-    const existing = ((await payload.find({ collection: o.users as CollectionSlug, where: { email: { equals: email } }, limit: 1, pagination: false, ...sys, req: asReq(payload, tx) })).docs as Doc[])[0]
-    const status = existing ? (existing.signupStatus ?? 'active') : null
-    if (existing && status !== 'unverified') return status === 'active' ? 'hasAccount' : 'nothing'
+    const rq = asReq(payload, tx)
+    // The same three lookups in every case, so the answer's timing says little about the address.
+    const existing = ((await payload.find({ collection: o.users as CollectionSlug, where: { email: { equals: email } }, limit: 1, pagination: false, ...sys, req: rq })).docs as Doc[])[0]
+    const declined = await payload.count({ collection: o.requests as CollectionSlug, where: { and: [{ email: { equals: email } }, { status: { equals: 'declined' } }] }, overrideAccess: true, req: rq })
+    const open = ((await payload.find({ collection: o.requests as CollectionSlug, where: { and: [{ email: { equals: email } }, { status: { equals: 'unverified' } }] }, limit: 1, pagination: false, ...sys, req: rq })).docs as Doc[])[0]
+    if (existing) return (existing.signupStatus ?? 'active') === 'active' ? 'hasAccount' : 'nothing'
     // A decline stands for its retention time: asking again in that time changes nothing.
-    const declined = await payload.count({ collection: o.requests as CollectionSlug, where: { and: [{ email: { equals: email } }, { status: { equals: 'declined' } }] }, overrideAccess: true, req: asReq(payload, tx) })
     if (declined.totalDocs) return 'nothing'
-
-    const userFields = { ...o.toUser(details), ...userData }
-    const user = existing
-      ? ((await payload.update({ collection: o.users as CollectionSlug, id: existing.id, data: { ...userFields, password } as never, ...sys, req: asReq(payload, tx) })) as Doc)
-      : ((await payload.create({ collection: o.users as CollectionSlug, data: { ...userFields, email, password, signupStatus: 'unverified' } as never, ...sys, req: asReq(payload, tx) })) as Doc)
     const request = {
       email,
       status: 'unverified',
       details,
       flag: flags.join('; ') || null,
       userData,
-      user: user.id,
+      user: null,
       tokenHash: hashToken(payload.secret, token),
       tokenExpires: new Date(Date.now() + o.verifyHours * HOUR).toISOString(),
       ...(o.scopeField ? { [o.scopeField]: scope } : {}),
     }
-    // One open request per address: a repeat before verifying replaces the earlier one (new details, new link).
-    const open = ((await payload.find({ collection: o.requests as CollectionSlug, where: { and: [{ email: { equals: email } }, { status: { equals: 'unverified' } }] }, limit: 1, pagination: false, ...sys, req: asReq(payload, tx) })).docs as Doc[])[0]
-    if (open) await payload.update({ collection: o.requests as CollectionSlug, id: open.id, data: request as never, ...sys, context: internal, req: asReq(payload, tx) })
-    else await payload.create({ collection: o.requests as CollectionSlug, data: request as never, ...sys, context: internal, req: asReq(payload, tx) })
+    // One open request per address: a repeat before confirming replaces the earlier one (new details, new link).
+    if (open) await payload.update({ collection: o.requests as CollectionSlug, id: open.id, data: request as never, ...sys, context: internal, req: rq })
+    else await payload.create({ collection: o.requests as CollectionSlug, data: request as never, ...sys, context: internal, req: rq })
     return 'verify'
   })
 
@@ -186,31 +182,50 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
 // ---------------------------------------------------------------------------------------------
 // Verify
 
-/** Confirm the email from the link. In approval mode the request then waits; in open mode it's approved at once. */
-export async function verifySignup(payload: Payload, token: unknown, req: Req = {}): Promise<{ status: 'pending' | 'active' }> {
+export type VerifyInput = { token?: unknown; password?: unknown }
+
+/**
+ * Confirm the email from the link, choosing the account's password: only the person with the inbox can do this,
+ * so the account belongs to the address's owner. The account is made now: waiting for approval, or (open mode)
+ * active at once. If sign-up was shut since they asked, the request still waits for staff.
+ */
+export async function verifySignup(payload: Payload, input: VerifyInput, req: Req = {}): Promise<{ status: 'pending' | 'active' }> {
   const o = signupOf(payload)
   const r = { ...req, payload } as Req
   const address = o.clientAddress(r)
-  if (address && !(await allowed(payload, 'verify', address, r))) throw new SignupError('busy', 'Too many tries. Please try again in an hour.', 429)
+  if (!(await allowed(payload, 'verify', address ?? 'unknown', r))) throw new SignupError('busy', 'Too many tries. Please try again in an hour.', 429)
   const bad = new SignupError('badLink', 'This link has expired or was already used. You can ask again from the sign-up page.')
+  const token = input?.token
   if (typeof token !== 'string' || token.length < 20 || token.length > 200) throw bad
+  const password = typeof input?.password === 'string' ? input.password : ''
+  if (password.length < o.minPasswordLength) throw new SignupError('password', `Please choose a password of at least ${o.minPasswordLength} characters.`)
+  if (password.length > 256) throw new SignupError('password', 'Please choose a password of 256 characters or fewer.')
   const { mode } = await currentMode(payload)
 
   let queued: Req | null = null
   const result = await transaction(payload, r, async (tx) => {
+    const rq = asReq(payload, tx)
     const where: Where = { and: [{ tokenHash: { equals: hashToken(payload.secret, token) } }, { status: { equals: 'unverified' } }] }
-    const request = ((await payload.find({ collection: o.requests as CollectionSlug, where, limit: 1, pagination: false, ...sys, req: asReq(payload, tx) })).docs as Doc[])[0]
+    const request = ((await payload.find({ collection: o.requests as CollectionSlug, where, limit: 1, pagination: false, ...sys, req: rq })).docs as Doc[])[0]
     if (!request || !request.tokenExpires || new Date(request.tokenExpires).getTime() < Date.now()) throw bad
-    const verified = { status: 'pending', verifiedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null }
-    // Open mode approves at once. If sign-up was shut since they asked, the request still waits for staff.
+    // An account made for this address since they asked (an invitation, say): theirs already; nothing to make.
+    const existing = await payload.count({ collection: o.users as CollectionSlug, where: { email: { equals: request.email } }, overrideAccess: true, req: rq })
+    if (existing.totalDocs) throw new SignupError('hasAccount', 'This address already has an account. Sign in, or set a new password if you\'ve forgotten it.', 409)
+    const details = (request.details ?? {}) as Record<string, unknown>
+    const user = (await payload.create({
+      collection: o.users as CollectionSlug,
+      data: { ...o.toUser(details), ...((request.userData ?? {}) as Record<string, unknown>), email: request.email, password, signupStatus: 'pending' } as never,
+      ...sys,
+      req: rq,
+    })) as Doc
+    const verified = { ...request, status: 'pending', user: user.id, verifiedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null }
     if (mode === 'open') {
-      const decided = await decide(payload, { ...request, ...verified }, 'approved', tx)
+      const decided = await decide(payload, verified, 'approved', tx)
       queued = tx
-      await payload.update({ collection: o.requests as CollectionSlug, id: request.id, data: decided as never, ...sys, context: internal, req: asReq(payload, tx) })
+      await payload.update({ collection: o.requests as CollectionSlug, id: request.id, data: decided as never, ...sys, context: internal, req: rq })
       return { status: 'active' as const, request }
     }
-    await payload.update({ collection: o.requests as CollectionSlug, id: request.id, data: verified as never, ...sys, context: internal, req: asReq(payload, tx) })
-    await payload.update({ collection: o.users as CollectionSlug, id: idOf(request.user)!, data: { signupStatus: 'pending' } as never, ...sys, req: asReq(payload, tx) })
+    await payload.update({ collection: o.requests as CollectionSlug, id: request.id, data: verified as never, ...sys, context: internal, req: rq })
     return { status: 'pending' as const, request }
   })
 
@@ -271,11 +286,11 @@ export async function flushAfterCommit(req: Req) {
 // Retention
 
 /**
- * Delete what's past its time: requests decided, abandoned or never verified more than `retentionDays` ago (with
- * the unverified accounts they made), and rate-limit counts older than a day. Waiting requests are kept until
+ * Delete what's past its time: requests decided, abandoned or never confirmed more than `retentionDays` ago, and
+ * rate-limit counts older than a day. Waiting requests are kept until
  * someone decides them. Run it daily, from the site's scheduled job.
  */
-export async function pruneSignupRequests(payload: Payload, now = new Date()): Promise<{ requests: number; accounts: number; attempts: number }> {
+export async function pruneSignupRequests(payload: Payload, now = new Date()): Promise<{ requests: number; attempts: number }> {
   const o = signupOf(payload)
   const cutoff = new Date(now.getTime() - o.retentionDays * DAY).toISOString()
   const where: Where = {
@@ -285,20 +300,8 @@ export async function pruneSignupRequests(payload: Payload, now = new Date()): P
     ],
   }
   const old = (await payload.find({ collection: o.requests as CollectionSlug, where, pagination: false, ...sys })).docs as Doc[]
-  let accounts = 0
-  for (const request of old) {
-    await transaction(payload, undefined, async (tx) => {
-      const userID = idOf(request.user)
-      if (request.status === 'unverified' && userID !== null) {
-        const user = (await payload.findByID({ collection: o.users as CollectionSlug, id: userID as string, ...sys, disableErrors: true, req: asReq(payload, tx) })) as Doc | null
-        if (user?.signupStatus === 'unverified') {
-          await payload.delete({ collection: o.users as CollectionSlug, id: userID, ...sys, req: asReq(payload, tx) })
-          accounts++
-        }
-      }
-      await payload.delete({ collection: o.requests as CollectionSlug, id: request.id as ID, ...sys, req: asReq(payload, tx) })
-    })
-  }
+  // Unconfirmed requests have no account (one is made only on confirming); declined ones lost theirs at the decision.
+  for (const request of old) await payload.delete({ collection: o.requests as CollectionSlug, id: request.id as ID, ...sys })
   const attempts = await payload.delete({ collection: o.attempts as CollectionSlug, where: { at: { less_than: new Date(now.getTime() - DAY).toISOString() } }, ...sys })
-  return { requests: old.length, accounts, attempts: attempts.docs.length }
+  return { requests: old.length, attempts: attempts.docs.length }
 }

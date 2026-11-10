@@ -18,3 +18,10 @@ Dated decisions for this repo, newest last.
   - Once a site has users, signed-out API account creation is refused.
 - 2026-11-10 (with Platform): the age gate is its own plugin (Platform builds it). Sign-up only runs the checks it's given, and passes check-only `answers` that are never stored.
 - 2026-11-10 (owner, relayed verbatim by Helm, about 5:35 PM MST), a standing rule: "they should be their own agnostic plugins that aren't dependent on each other but work seamlessly. That should basically be our motto" and "Always build it with the best architecture first, never just the fastest". Sign-up follows it: the age gate is a separate plugin, plugged in through `checks`.
+- 2026-11-10 (Plugin Security's independent read, ledger 53c8805e1452), two required fixes, both done:
+  - **Who manages sign-up:** the default was any signed-in user, so any member (a child included) could read the queue, decide requests and open sign-up. Now `access.manage` is required, and the plugin won't start without it. `signupStatus` is readable only by the account and by managers, and checks' `userData` is never shown in the queue.
+  - **Setting up an account under someone else's address:** the password used to be chosen when asking, so whoever asked with a parent's address got the account once the parent pressed Confirm. Now nothing is made when asking. The person with the inbox chooses the password on the confirm page, and the account is made then. This replaces "people choose their password at sign-up" above. Unconfirmed requests no longer have accounts, so there's no `unverified` account status.
+  - Also taken from its recommendations:
+    - the same lookups in every case, against timing;
+    - requests with no address count under "unknown";
+    - the README notes the spoofable `x-forwarded-for` default and the cheap site-wide block, and suggests `verifyHuman` on public sites.

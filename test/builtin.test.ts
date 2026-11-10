@@ -11,7 +11,7 @@ let payload: Payload
 let mongo: MongoMemoryReplSet
 const mail: { to: string; text: string }[] = []
 const from = (address: string) => ({ headers: new Headers({ 'x-forwarded-for': address }) }) as Partial<PayloadRequest>
-const ask = (email: string, address: string) => submitSignup(payload, { email, password: 'correct horse battery', details: { name: 'Made Up' } }, from(address))
+const ask = (email: string, address: string) => submitSignup(payload, { email, details: { name: 'Made Up' } }, from(address))
 
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
@@ -26,7 +26,7 @@ beforeAll(async () => {
       email: (() => ({ name: 'test', defaultFromAddress: 'noreply@example.com', defaultFromName: 'Test', sendEmail: async (m: { to: string; text: string }) => void mail.push(m) })) as never,
       collections: [{ slug: 'users', auth: true, access: { create: () => true }, fields: [{ name: 'name', type: 'text' }] }],
       admin: { user: 'users' },
-      plugins: [signupPlugin({ fields: [{ name: 'name', type: 'text' }], limits: { address: 2, email: 1 }, forceMode: 'approval' })],
+      plugins: [signupPlugin({ fields: [{ name: 'name', type: 'text' }], limits: { address: 2, email: 1 }, forceMode: 'approval', access: { manage: () => false } })],
     }),
   })
   const models = (payload.db as unknown as { collections: Record<string, { createCollection: () => Promise<unknown>; ensureIndexes: () => Promise<unknown> }> }).collections
@@ -56,11 +56,22 @@ describe('the built-in rate limiter', () => {
 })
 
 describe('the email link', () => {
+  it('keeps the form, with a message, when the two passwords differ, and makes nothing', async () => {
+    await ask('e@example.com', '198.51.100.10')
+    const token = decodeURIComponent(/token=(\S+)/.exec(mail.filter((m) => m.to === 'e@example.com').at(-1)!.text)![1]!)
+    const endpoint = payload.config.endpoints!.find((e) => e.path === '/signup/verify' && e.method === 'post')!
+    const form = new Request('https://site.example.com/api/signup/verify', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `token=${encodeURIComponent(token)}&password=first+long+password&confirm=other+long+password` })
+    const html = await (await endpoint.handler(Object.assign(form, { payload }) as never)).text()
+    expect(html).toContain('role="alert"')
+    expect(html).toContain('<label for="password">')
+    expect((await payload.find({ collection: 'users', where: { email: { equals: 'e@example.com' } }, overrideAccess: true })).totalDocs).toBe(0)
+  })
+
   it('verifies when the confirm button posts the form', async () => {
     await ask('d@example.com', '198.51.100.9')
     const token = decodeURIComponent(/token=(\S+)/.exec(mail.filter((m) => m.to === 'd@example.com').at(-1)!.text)![1]!)
     const endpoint = payload.config.endpoints!.find((e) => e.path === '/signup/verify' && e.method === 'post')!
-    const form = new Request('https://site.example.com/api/signup/verify', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `token=${encodeURIComponent(token)}` })
+    const form = new Request('https://site.example.com/api/signup/verify', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `token=${encodeURIComponent(token)}&password=correct+horse+battery&confirm=correct+horse+battery` })
     const res = await endpoint.handler(Object.assign(form, { payload }) as never)
     expect(await res.text()).toContain('A person will look at your request')
     const [user] = (await payload.find({ collection: 'users', where: { email: { equals: 'd@example.com' } }, overrideAccess: true })).docs as { signupStatus?: string }[]

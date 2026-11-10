@@ -13,8 +13,8 @@ export type Req = Partial<PayloadRequest>
 export type SignupMode = 'open' | 'approval' | 'invite-only' | 'closed'
 export const MODES: SignupMode[] = ['open', 'approval', 'invite-only', 'closed']
 
-/** A user's place in sign-up. Accounts made any other way (invites, the admin) are `active`. */
-export type SignupStatus = 'unverified' | 'pending' | 'active' | 'declined'
+/** A user's place in sign-up. Accounts are made on confirming, as `pending` (or `active` in open mode); accounts made any other way are `active`. */
+export type SignupStatus = 'pending' | 'active'
 
 /** A request's place in the queue. */
 export type RequestStatus = 'unverified' | 'pending' | 'approved' | 'declined'
@@ -77,8 +77,8 @@ export type SignupPluginOptions = {
   clientAddress?: (req: Req) => string | null
   /** A human check, such as Turnstile. Returns true for a person; false or throwing refuses. */
   verifyHuman?: (args: { token: string | undefined; address: string | null; req: Req }) => boolean | Promise<boolean>
-  /** Who decides requests and changes the mode. Default: any signed-in user of the auth collection. */
-  access?: { manage?: Access }
+  /** Who decides requests and changes the mode. Required: the plugin won't start without it, so a site can't leave the queue open to every signed-in member by accident. */
+  access: { manage: Access }
   /** A field that separates sites, such as `tenant`. The request takes its value from `scopeFor`. */
   scopeField?: string
   /** Which site a request belongs to (with `scopeField`). Return null to refuse. */

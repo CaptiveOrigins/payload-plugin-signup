@@ -17,7 +17,7 @@ export function requestsCollection(o: ResolvedSignup): CollectionConfig {
       useAsTitle: 'email',
       defaultColumns: ['email', 'status', 'flag', 'createdAt'],
       description:
-        'People asking for an account. Open one and set Status to Approved or Declined, or select several and use Edit. Unverified ones haven\'t confirmed their email yet. Decided, abandoned and unverified requests are deleted after ' +
+        'People asking for an account. Open one and set Status to Approved or Declined, or select several and use Edit. Unverified ones haven\'t confirmed their email yet, and have no account. Decided, abandoned and unverified requests are deleted after ' +
         `${o.retentionDays} days.`,
       listSearchableFields: ['email'],
     },
@@ -50,7 +50,8 @@ export function requestsCollection(o: ResolvedSignup): CollectionConfig {
       { name: 'verifiedAt', type: 'date', admin: { readOnly: true, position: 'sidebar', date: { pickerAppearance: 'dayAndTime' } } },
       { name: 'decidedAt', type: 'date', index: true, admin: { readOnly: true, position: 'sidebar', date: { pickerAppearance: 'dayAndTime' } } },
       { name: 'decidedBy', type: 'relationship', relationTo: o.users as never, admin: { readOnly: true, position: 'sidebar', description: 'Empty when it was approved automatically (open sign-up).' } },
-      { name: 'userData', type: 'json', admin: internal },
+      // What the site's checks set for the account (a minor flag, say): applied on confirming, read by nobody.
+      { name: 'userData', type: 'json', admin: internal, access: { read: nobody } },
       { name: 'tokenHash', type: 'text', index: true, admin: internal, access: { read: nobody } },
       { name: 'tokenExpires', type: 'date', admin: internal },
     ],
@@ -117,7 +118,7 @@ export function attemptsCollection(o: ResolvedSignup): CollectionConfig {
 }
 
 /** Added to the auth collection: where an account is in sign-up. Accounts made any other way are active. */
-export function signupStatusField(): Field {
+export function signupStatusField(o: ResolvedSignup): Field {
   return {
     name: 'signupStatus',
     type: 'select',
@@ -125,11 +126,23 @@ export function signupStatusField(): Field {
     index: true,
     options: [
       { label: 'Active', value: 'active' },
-      { label: 'Unverified', value: 'unverified' },
       { label: 'Waiting for approval', value: 'pending' },
-      { label: 'Declined', value: 'declined' },
     ],
-    access: { create: nobody, update: nobody },
+    // Read by the account itself and by sign-up's managers; set only by the plugin.
+    access: {
+      create: nobody,
+      update: nobody,
+      read: async (args) => {
+        const { req, doc } = args as { req: { user?: { id?: unknown } | null }; doc?: { id?: unknown } }
+        if (!req.user) return false
+        if (doc?.id !== undefined && String(req.user.id) === String(doc.id)) return true
+        try {
+          return (await o.manage(args as never)) === true
+        } catch {
+          return false
+        }
+      },
+    },
     admin: { position: 'sidebar', readOnly: true, description: 'Set by sign-up. Only active accounts can sign in.' },
   }
 }
