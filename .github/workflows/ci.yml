@@ -2,9 +2,10 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ['**.md', 'docs/**']
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
-    paths-ignore: ['**.md', 'docs/**']
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
 permissions:
   contents: read
 # Actions minutes rules (ops/rules/actions-minutes.md, 2026-11-10): one run per change, drafts skipped, a timeout.

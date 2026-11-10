@@ -1,8 +1,8 @@
 .DS_Store
+.build/
 .env
+.gradle/
 .secrets/
 build/
 dist/
 node_modules/
-.build/
-.gradle/
