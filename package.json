@@ -10,13 +10,14 @@
     "payload",
     "payload-plugin",
     "payloadcms",
+    "authentication",
+    "multi-tenant",
     "signup",
     "registration",
     "approval",
     "waitlist",
     "invite-only",
-    "email-verification",
-    "multi-tenant"
+    "email-verification"
   ],
   "license": "MIT",
   "repository": {
