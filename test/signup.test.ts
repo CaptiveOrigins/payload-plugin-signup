@@ -67,7 +67,13 @@ beforeAll(async () => {
           fields: [
             { name: 'name', type: 'text', required: true },
             { name: 'country', type: 'text', required: true },
+            { name: 'pet', type: 'text', label: '<i>Pet</i>' },
+            { name: 'school', type: 'text' },
+            { name: 'staffNote', type: 'text', admin: { hidden: true } },
+            { name: 'birthDate', type: 'text', access: { read: () => false } },
           ],
+          // Listed: name, country and pet. school isn't listed; staffNote and birthDate are listed but must never show.
+          confirmShows: ['name', 'country', 'pet', 'staffNote', 'birthDate'],
           toUser: (d) => ({ name: d.name, country: d.country }),
           checks: [
             ({ data, answers }) => {
@@ -357,15 +363,51 @@ describe('the confirm page shows what was asked for', () => {
     await expect(readSignupRequest(payload, { token }, req())).rejects.toMatchObject({ code: 'badLink' })
   })
 
+  it('shows only the fields the site listed, never hidden or read-restricted ones, even when listed', async () => {
+    const email = fresh()
+    await submitSignup(payload, { email, details: { name: 'Made Up', country: 'US', pet: 'Gecko', school: 'Made-up School', staffNote: 'internal', birthDate: '2015-04-01' } }, req())
+    const shown = await readSignupRequest(payload, { token: tokenFrom(email) }, req())
+    expect(shown.details.map((d) => d.name)).toEqual(['name', 'country', 'pet'])
+    expect(JSON.stringify(shown)).not.toMatch(/Made-up School|internal|2015/)
+  })
+
+  it('keeps the summary on a password retry, and a mismatch still counts against the verify limit', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    const endpoint = payload.config.endpoints!.find((e) => e.path === '/signup/verify' && e.method === 'post')!
+    const post = async (password: string, confirm: string) => {
+      const body = new URLSearchParams({ token, password, confirm })
+      const headers = new Headers({ 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-for': '203.0.113.7' })
+      const res = await endpoint.handler({ payload, headers, formData: async () => new Request('http://x', { method: 'POST', body, headers }).formData() } as never)
+      return { status: res.status, html: await res.text() }
+    }
+    const short = await post('short', 'short')
+    expect(short.status).toBe(400)
+    expect(short.html).toMatch(/at least 10 characters/)
+    expect(short.html).toContain(`You asked for an account as <strong>${email}</strong>`)
+    const kinds: string[] = []
+    limiter = (kind) => (kinds.push(kind), true)
+    const mismatch = await post(PW, PW + 'x')
+    expect(mismatch.html).toMatch(/Please type the same password twice/)
+    expect(mismatch.html).toContain('<dl>')
+    expect(kinds).toEqual(['verify'])
+    expect([(await requests(email))[0]!.status, (await users(email)).length]).toEqual(['unverified', 0])
+  })
+
   it('shows the request above the password form, escaped, and says at once when a link is dead', async () => {
     const email = fresh()
-    await submitSignup(payload, { email, details: { name: '<b>Made</b> & Up', country: 'US' } }, req())
+    await submitSignup(payload, { email, details: { name: '<b>Made</b> & Up', country: 'US', pet: 'Gecko' } }, req())
     const token = tokenFrom(email)
+    // Payload's email field refuses this address, but the page mustn't rely on that: write it straight to the database.
+    const [r] = await requests(email)
+    await payload.db.updateOne({ collection: 'signup-requests', where: { id: { equals: r!.id } }, data: { email: '<img/src=x/onerror=alert(1)>@a.bc' } } as never)
     const ok = await getPage(token)
     expect(ok.status).toBe(200)
-    expect(ok.html).toContain(`You asked for an account as <strong>${email}</strong>`)
+    expect(ok.html).toContain('You asked for an account as <strong>&lt;img/src=x/onerror=alert(1)&gt;@a.bc</strong>')
     expect(ok.html).toContain('<dt>Name</dt><dd>&lt;b&gt;Made&lt;/b&gt; &amp; Up</dd>')
-    expect(ok.html).not.toContain('<b>Made</b>')
+    expect(ok.html).toContain('<dt>&lt;i&gt;Pet&lt;/i&gt;</dt>')
+    expect(ok.html).not.toMatch(/<b>Made<\/b>|<img|<i>Pet/)
     expect(ok.html.indexOf('<dl>')).toBeLessThan(ok.html.indexOf('<form'))
     const dead = await getPage('x'.repeat(43))
     expect(dead.status).toBe(400)

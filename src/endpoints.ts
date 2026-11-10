@@ -29,7 +29,6 @@ const page = (title: string, inner: string, status = 200) =>
     { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } },
   )
 
-/** Choose a password, twice, then confirm. Labels and autocomplete hints for password managers and screen readers. */
 /** What they asked for, so they can see it's their request before confirming. */
 const summary = (shown: { email: string; details: RequestDetail[] } | null) =>
   shown
@@ -37,6 +36,7 @@ const summary = (shown: { email: string; details: RequestDetail[] } | null) =>
       (shown.details.length ? `<dl>${shown.details.map((d) => `<dt>${escape(d.label)}</dt><dd>${escape(d.value)}</dd>`).join('')}</dl>` : '')
     : ''
 
+/** Choose a password, twice, then confirm. Labels and autocomplete hints for password managers and screen readers. */
 const confirmForm = (req: PayloadRequest, token: string, shown: { email: string; details: RequestDetail[] } | null = null) => {
   const min = (req.payload.config.custom?.signup as { minPasswordLength?: number } | undefined)?.minPasswordLength ?? 10
   return (
@@ -111,9 +111,13 @@ export const signupEndpoints: Endpoint[] = [
         if (!html) return failure(error, req)
         const message = error instanceof SignupError ? error.message : 'Something went wrong. Please try again later.'
         // A password problem keeps the form, so they can try again with the same link.
-        if (error instanceof SignupError && (error.code === 'password' || error.code === 'passwordMismatch'))
-          {
-          const shown = await readSignupRequest(req.payload, { token: b.token }, req).catch(() => null)
+        if (error instanceof SignupError && (error.code === 'password' || error.code === 'passwordMismatch')) {
+          // A short password came back from verifySignup, which already counted this try. A mismatch never reached
+          // it, so that read counts, and the page can't be used to read past the limit.
+          const shown = await readSignupRequest(req.payload, { token: b.token }, req, { countAttempt: error.code === 'passwordMismatch' }).catch((e) => {
+            if (!(e instanceof SignupError)) req.payload.logger.error({ err: e, msg: 'signup: request not readable for the confirm page' })
+            return null
+          })
           return page('Confirm your email', `<p role="alert" class="error">${escape(message)}</p>${confirmForm(req, String(b.token ?? ''), shown)}`, 400)
         }
         return page('That didn\'t work', `<p>${escape(message)}</p>`, error instanceof SignupError ? error.status : 500)

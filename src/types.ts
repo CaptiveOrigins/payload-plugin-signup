@@ -85,6 +85,12 @@ export type SignupPluginOptions = {
   scopeFor?: (req: Req) => ID | null | Promise<ID | null>
   /** Days a decided, abandoned or unverified request is kept. Default 90. */
   retentionDays?: number
+  /**
+   * Which of your fields the confirm page shows, by name, so the person can see it's their request. Default: none,
+   * only the email. Someone who mistypes their address sends the link to a stranger's inbox, so show only what's
+   * safe for a stranger to read. Hidden fields and fields with their own read access are never shown.
+   */
+  confirmShows?: string[]
   /** Hours a verification link works. Default 48. */
   verifyHours?: number
   /** Minimum password length. Default 10. */
@@ -114,4 +120,5 @@ export type ResolvedSignup = Required<Pick<SignupPluginOptions, 'retentionDays' 
   scopeField?: string
   scopeFor?: SignupPluginOptions['scopeFor']
   forceMode: SignupMode | null
+  confirmShows: string[]
 }

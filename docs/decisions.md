@@ -44,5 +44,5 @@ Settled decisions from the owner, through Helm's feed. The feed holds the owner'
 ## 2026-11-10: 0.1.1, show the request on the confirm page (K3)
 
 - Asked for in the Site lead's review: people should see what they're confirming. `readSignupRequest` only reads, so mail scanners opening the link stay harmless, and a dead link is reported before the password form.
-- It shows only the configured fields, never `userData` or check answers, because those can carry age details meant for checks and staff rules, not for display.
+- It shows only the fields a site lists in `confirmShows`, none by default, and never hidden fields, fields with read access, `userData` or check answers. The security read on c533927 (a subagent, using Plugin Security's checklist) found the first version showed every field. A child who mistypes their address would have shown their details to the owner of that inbox. Kids first, so it's opt-in. Captive Origins should list `name` at most.
 - It's on the `confirm-details` branch, not main, because the owner's N96 publishes main as 0.1.0, the code Plugin Security approved (8feec5d). 0.1.1 merges and goes through the staged Release workflow after 0.1.0 is on npm, with a pre-publish security read first (K34).

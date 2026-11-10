@@ -43,6 +43,7 @@ export const signupPlugin =
       scopeFor: options.scopeFor,
       retentionDays: options.retentionDays ?? 90,
       verifyHours: options.verifyHours ?? 48,
+      confirmShows: options.confirmShows ?? [],
       minPasswordLength: options.minPasswordLength ?? 10,
       forceMode: lockedMode(options.forceMode),
       adminGroup: options.adminGroup ?? 'Sign-up',

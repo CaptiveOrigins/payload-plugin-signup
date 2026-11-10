@@ -56,4 +56,8 @@ Gaps skipped, and why:
 | Used, made-up, wrong-type and expired links read as `badLink`; reads count against the verify limit | `the confirm page > reads…` and `refuses an expired link…` |
 | The page shows the request above the form, escaped; a dead link says so with no form; a refused limiter leaves the form without the summary | `the confirm page > shows the request…` |
 
-Gaps added: the three tests above. Gaps skipped: none new.
+| Only listed fields show; hidden and read-restricted fields never show, even when listed | `the confirm page > shows only the fields the site listed…` |
+| A password retry keeps the summary; a mismatch counts against the verify limit; a short password doesn't count twice | `the confirm page > keeps the summary on a password retry…` |
+| The email and labels are escaped (an address written straight to the database) | `the confirm page > shows the request…` |
+
+Gaps added: the five tests above, after the security read's mutation check found the hidden-field skip and two escapes untested. A second mutation check catches all six guards. Gaps skipped: dropping `status: unverified` from the read's query isn't caught, because used links lose their token hash anyway; the condition is kept as a backup.

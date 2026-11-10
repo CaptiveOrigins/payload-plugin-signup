@@ -188,7 +188,10 @@ export type RequestDetail = { name: string; label: string; value: string }
 function labelOf(field: Record<string, any>): string { // eslint-disable-line @typescript-eslint/no-explicit-any
   const l = field.label
   if (typeof l === 'string' && l) return l
-  if (l && typeof l === 'object') return String(l.en ?? Object.values(l)[0] ?? field.name)
+  if (l && typeof l === 'object') {
+    const text = [l.en, ...Object.values(l)].find((v) => typeof v === 'string' && v)
+    if (text) return text as string
+  }
   return String(field.name).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase())
 }
 
@@ -212,14 +215,21 @@ function showValue(field: Record<string, any>, value: unknown): string | null { 
 
 /**
  * What the person asked for, from the link, so the confirm page can show it before they press the button: the
- * email and the request's own fields, as words. It only reads: the link still works afterwards, and nothing about
- * the request changes. Answers meant only for checks were never stored, and what checks set for the account isn't
- * shown. An unknown, used or expired link gets the same `badLink` refusal as confirming would.
+ * email, and the fields the site listed in `confirmShows`, as words. Only those: a mistyped address sends the link
+ * to a stranger. Hidden fields and fields with their own read access are never shown, even when listed. Answers
+ * meant only for checks were never stored, and what checks set for the account isn't shown. It only reads: the
+ * link still works afterwards. An unknown, used or expired link gets the same `badLink` refusal as confirming would.
+ * `countAttempt: false` is for a page that just counted one through `verifySignup`.
  */
-export async function readSignupRequest(payload: Payload, input: { token?: unknown }, req: Req = {}): Promise<{ email: string; details: RequestDetail[] }> {
+export async function readSignupRequest(
+  payload: Payload,
+  input: { token?: unknown },
+  req: Req = {},
+  { countAttempt = true }: { countAttempt?: boolean } = {},
+): Promise<{ email: string; details: RequestDetail[] }> {
   const o = signupOf(payload)
   const r = { ...req, payload } as Req
-  if (!(await allowed(payload, 'verify', o.clientAddress(r) ?? 'unknown', r))) throw new SignupError('busy', 'Too many tries. Please try again in an hour.', 429)
+  if (countAttempt && !(await allowed(payload, 'verify', o.clientAddress(r) ?? 'unknown', r))) throw new SignupError('busy', 'Too many tries. Please try again in an hour.', 429)
   const bad = new SignupError('badLink', 'This link has expired or was already used. You can ask again from the sign-up page.')
   const token = input?.token
   if (typeof token !== 'string' || token.length < 20 || token.length > 200) throw bad
@@ -228,8 +238,9 @@ export async function readSignupRequest(payload: Payload, input: { token?: unkno
   if (!request || !request.tokenExpires || new Date(request.tokenExpires).getTime() < Date.now()) throw bad
   const stored = (request.details ?? {}) as Record<string, unknown>
   const details: RequestDetail[] = []
+  const listed = new Set(o.confirmShows)
   for (const field of o.fields as Record<string, any>[]) { // eslint-disable-line @typescript-eslint/no-explicit-any
-    if (typeof field.name !== 'string' || field.admin?.hidden || field.hidden) continue
+    if (typeof field.name !== 'string' || !listed.has(field.name) || field.admin?.hidden || field.hidden || field.access?.read) continue
     const value = showValue(field, stored[field.name])
     if (value !== null) details.push({ name: field.name, label: labelOf(field), value })
   }
