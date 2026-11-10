@@ -25,3 +25,18 @@ Dated decisions for this repo, newest last.
     - the same lookups in every case, against timing;
     - requests with no address count under "unknown";
     - the README notes the spoofable `x-forwarded-for` default and the cheap site-wide block, and suggests `verifyHuman` on public sites.
+
+## 2026-11-10: decision feed acknowledged (ops/decisions/all.md, captive-origins.md)
+
+Settled decisions from the owner, through Helm's feed. The feed holds the owner's exact words.
+
+- **D1** Settled decisions arrive through the feed and are acted on, not re-argued.
+- **D2** Build it right: agnostic plugins with optional adapters, best architecture first. This repo imports no other Captive Origins plugin.
+- **D3** Owner steps and tests go to `~/Code/ops/inbox/` per `ops/rules/owner-items.md`, never straight to needs-you.md or tests.md.
+- **D4** Priority: Docker media, Minecraft server, then all Captive Origins.
+- **D5** No private repos to save CI minutes. This repo is public, with the Actions-minutes rules.
+- **D6, D21** Plugin names need the owner's OK before work starts (ops/plugin-names.md). "Sign-up" is approved (2026-11-10).
+- **D7** No launch dates: work follows the priority list in ops/timeline-captive-origins.md. A freeze point is cut only when the owner says so.
+- **D8** Seed World hears about every collection-structure change ahead of time, with versions, and audits when it lands.
+- **D12** No plugin-family tags yet. None are in `package.json` keywords.
+- Not for this repo: D9 (PM doc), D10 (tour before studbook), D11 (kids decide on guardian suggestions), D14 (plan B), D15 (Husbandry.Pro link), D16 (both views).
