@@ -47,3 +47,13 @@ Gaps skipped, and why:
 - **Timing differences** between "new address" and "existing account". Both do a few database calls and send one email. Not measured, so not claimed.
 
 22 tests.
+
+## 2026-11-10: 0.1.1, the confirm page shows the request (K3)
+
+| Promise | Test |
+| --- | --- |
+| `readSignupRequest` gives the email and configured fields as words; it doesn't use up the link; check answers and check-set user data aren't shown | `the confirm page > reads the email and the details…` |
+| Used, made-up, wrong-type and expired links read as `badLink`; reads count against the verify limit | `the confirm page > reads…` and `refuses an expired link…` |
+| The page shows the request above the form, escaped; a dead link says so with no form; a refused limiter leaves the form without the summary | `the confirm page > shows the request…` |
+
+Gaps added: the three tests above. Gaps skipped: none new.

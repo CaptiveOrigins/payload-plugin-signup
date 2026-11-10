@@ -3,7 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { buildConfig, getPayload, type Payload, type PayloadRequest } from 'payload'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { pruneSignupRequests, RECEIVED, signupPlugin, submitSignup, verifySignup, type CheckResult, type LimitKind } from '../src/index.js'
+import { pruneSignupRequests, readSignupRequest, RECEIVED, signupPlugin, submitSignup, verifySignup, type CheckResult, type LimitKind } from '../src/index.js'
 
 // Made-up people at example.com, on a throwaway in-memory database.
 type Doc = Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -317,6 +317,65 @@ describe('refusals, failing closed', () => {
     expect(html).toMatch(/<label for="password">/)
     expect(html).toContain('autocomplete="new-password"')
     expect([(await requests(email))[0]!.status, (await users(email)).length]).toEqual(['unverified', 0])
+  })
+})
+
+describe('the confirm page shows what was asked for', () => {
+  const getPage = async (token: string) => {
+    const endpoint = payload.config.endpoints!.find((e) => e.path === '/signup/verify' && e.method === 'get')!
+    const res = await endpoint.handler({ payload, headers: new Headers({ 'x-forwarded-for': '203.0.113.7' }), url: `https://site.example.com/api/signup/verify?token=${encodeURIComponent(token)}` } as never)
+    return { status: res.status, html: await res.text() }
+  }
+
+  it('reads the email and the details by token, without using up the link or showing what checks set', async () => {
+    const email = fresh()
+    checkResult = { userData: { minorUntil: '2031-01' } }
+    await submitSignup(payload, { email, details: { name: 'Made Up', country: 'US' }, answers: { birthYear: 2015 } }, req())
+    const token = tokenFrom(email)
+    const shown = await readSignupRequest(payload, { token }, req())
+    expect(shown).toEqual({ email, details: [{ name: 'name', label: 'Name', value: 'Made Up' }, { name: 'country', label: 'Country', value: 'US' }] })
+    expect(JSON.stringify(shown)).not.toMatch(/2031|2015/)
+    // Reading twice changes nothing; the link still confirms.
+    await readSignupRequest(payload, { token }, req())
+    expect([(await requests(email))[0]!.status, (await users(email)).length]).toEqual(['unverified', 0])
+    expect(await verifySignup(payload, { token, password: PW }, req())).toEqual({ status: 'pending' })
+    // Once used, the link reads as dead, the same as a made-up one.
+    await expect(readSignupRequest(payload, { token }, req())).rejects.toMatchObject({ code: 'badLink' })
+    await expect(readSignupRequest(payload, { token: 'x'.repeat(43) }, req())).rejects.toMatchObject({ code: 'badLink' })
+    await expect(readSignupRequest(payload, { token: 5 }, req())).rejects.toMatchObject({ code: 'badLink' })
+  })
+
+  it('refuses an expired link, and counts reads against the verify limit', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    limiter = (kind) => kind !== 'verify'
+    await expect(readSignupRequest(payload, { token }, req())).rejects.toMatchObject({ code: 'busy' })
+    limiter = null
+    const [r] = await requests(email)
+    await payload.update({ collection: 'signup-requests' as never, id: r!.id, data: { tokenExpires: new Date(Date.now() - 1000).toISOString() } as never, overrideAccess: true, context: { signupInternal: true } })
+    await expect(readSignupRequest(payload, { token }, req())).rejects.toMatchObject({ code: 'badLink' })
+  })
+
+  it('shows the request above the password form, escaped, and says at once when a link is dead', async () => {
+    const email = fresh()
+    await submitSignup(payload, { email, details: { name: '<b>Made</b> & Up', country: 'US' } }, req())
+    const token = tokenFrom(email)
+    const ok = await getPage(token)
+    expect(ok.status).toBe(200)
+    expect(ok.html).toContain(`You asked for an account as <strong>${email}</strong>`)
+    expect(ok.html).toContain('<dt>Name</dt><dd>&lt;b&gt;Made&lt;/b&gt; &amp; Up</dd>')
+    expect(ok.html).not.toContain('<b>Made</b>')
+    expect(ok.html.indexOf('<dl>')).toBeLessThan(ok.html.indexOf('<form'))
+    const dead = await getPage('x'.repeat(43))
+    expect(dead.status).toBe(400)
+    expect(dead.html).toMatch(/expired or was already used/)
+    expect(dead.html).not.toContain('<form')
+    // A limiter that refuses still leaves the form, without the summary, so the link can be used later.
+    limiter = (kind) => kind !== 'verify'
+    const busy = await getPage(token)
+    expect(busy.html).toContain('<form')
+    expect(busy.html).not.toContain('<dl>')
   })
 })
 

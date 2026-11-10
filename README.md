@@ -2,7 +2,7 @@
 
 Sign-up for Payload: open, approval, invite-only or closed, switched in the admin. Requests are verified by email and wait as disabled accounts for an approve or decline, with no account enumeration.
 
-**Status:** 0.1.0, not on npm yet. 28 tests pass against a real MongoDB (in memory, single-node replica set) on Payload 3.92: every mode, confirming, approving and declining, that nobody can set up an account under someone else's address, the same answer for every address, refusals that fail closed, rate limits, what staff and members can and can't see or change, rollback, and retention. An independent security read found two problems before release, both fixed and tested (see [docs/decisions.md](docs/decisions.md)). Nothing has run on a real site yet, and no real email has been sent: the tests capture email. Integration into the Captive Origins platform is next.
+**Status:** 0.1.0, not on npm yet; 0.1.1 is on the `confirm-details` branch. 31 tests pass against a real MongoDB (in memory, single-node replica set) on Payload 3.92: every mode, confirming, approving and declining, that nobody can set up an account under someone else's address, the same answer for every address, refusals that fail closed, rate limits, what staff and members can and can't see or change, rollback, and retention. An independent security read found two problems before release, both fixed and tested (see [docs/decisions.md](docs/decisions.md)). Nothing has run on a real site yet, and no real email has been sent: the tests capture email. Integration into the Captive Origins platform is next.
 
 ## What it does
 
@@ -53,7 +53,7 @@ export default buildConfig({
 })
 ```
 
-Build the collections' indexes before first use (`signup-requests`, `signup-attempts`, and the new `signupStatus` on your users). If you build your own confirm page, ask for the password there and post `{ token, password }`; never confirm when the page loads. With a tenant plugin, pass `scopeField` and `scopeFor`, and add `signup-requests` to your tenant plugin's collections, so each site sees its own queue. The mode setting is one for the whole install.
+Build the collections' indexes before first use (`signup-requests`, `signup-attempts`, and the new `signupStatus` on your users). If you build your own confirm page, show what was asked for with `readSignupRequest`, ask for the password there and post `{ token, password }`; never confirm when the page loads. With a tenant plugin, pass `scopeField` and `scopeFor`, and add `signup-requests` to your tenant plugin's collections, so each site sees its own queue. The mode setting is one for the whole install.
 
 ## Endpoints
 
@@ -61,10 +61,10 @@ Build the collections' indexes before first use (`signup-requests`, `signup-atte
 | --- | --- | --- |
 | `GET /api/signup/mode` | | `{ mode, accepting, message }` |
 | `POST /api/signup/request` | `{ email, details, answers?, humanToken? }` | 202 `{ ok, message }`, or an error `{ error: { code, message } }` |
-| `GET /api/signup/verify?token=` | | A small page: choose a password, then confirm |
+| `GET /api/signup/verify?token=` | | A small page: what was asked for (email and details), then choose a password and confirm |
 | `POST /api/signup/verify` | `{ token, password }` as JSON, or the page's form (`token`, `password`, `confirm`) | JSON `{ status: 'pending' or 'active' }`, or a page |
 
-Error codes: `closed`, `inviteOnly`, `email`, `password`, `passwordMismatch` (the page only), `refused`, `checkFailed`, `human`, `busy`, `badLink`, `hasAccount` (an account was made for the address since they asked). The same functions are exported for your own pages: `submitSignup`, `verifySignup`, `currentMode`.
+Error codes: `closed`, `inviteOnly`, `email`, `password`, `passwordMismatch` (the page only), `refused`, `checkFailed`, `human`, `busy`, `badLink`, `hasAccount` (an account was made for the address since they asked). The same functions are exported for your own pages: `submitSignup`, `verifySignup`, `currentMode`, and `readSignupRequest` to show what was asked for on your confirm page (it only reads; the link still works).
 
 ## Commands
 

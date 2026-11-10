@@ -40,3 +40,9 @@ Settled decisions from the owner, through Helm's feed. The feed holds the owner'
 - **D8** Seed World hears about every collection-structure change ahead of time, with versions, and audits when it lands.
 - **D12** No plugin-family tags yet. None are in `package.json` keywords.
 - Not for this repo: D9 (PM doc), D10 (tour before studbook), D11 (kids decide on guardian suggestions), D14 (plan B), D15 (Husbandry.Pro link), D16 (both views).
+
+## 2026-11-10: 0.1.1, show the request on the confirm page (K3)
+
+- Asked for in the Site lead's review: people should see what they're confirming. `readSignupRequest` only reads, so mail scanners opening the link stay harmless, and a dead link is reported before the password form.
+- It shows only the configured fields, never `userData` or check answers, because those can carry age details meant for checks and staff rules, not for display.
+- It's on the `confirm-details` branch, not main, because the owner's N96 publishes main as 0.1.0, the code Plugin Security approved (8feec5d). 0.1.1 merges and goes through the staged Release workflow after 0.1.0 is on npm, with a pre-publish security read first (K34).

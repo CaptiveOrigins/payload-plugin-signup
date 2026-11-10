@@ -182,6 +182,60 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
 // ---------------------------------------------------------------------------------------------
 // Verify
 
+export type RequestDetail = { name: string; label: string; value: string }
+
+/** A field's label as written in the config, in plain text. Labels given per language use English, then any. */
+function labelOf(field: Record<string, any>): string { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const l = field.label
+  if (typeof l === 'string' && l) return l
+  if (l && typeof l === 'object') return String(l.en ?? Object.values(l)[0] ?? field.name)
+  return String(field.name).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase())
+}
+
+/** A stored value as words: select values show their option's label, yes/no for checkboxes, dates as dates. */
+function showValue(field: Record<string, any>, value: unknown): string | null { // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (value === null || value === undefined || value === '') return null
+  const one = (v: unknown) => {
+    const option = Array.isArray(field.options) ? field.options.find((x: unknown) => (typeof x === 'object' && x ? (x as Doc).value : x) === v) : undefined
+    if (option && typeof option === 'object') return typeof option.label === 'string' ? option.label : String(v)
+    return String(v)
+  }
+  if (field.type === 'checkbox') return value ? 'Yes' : 'No'
+  if (field.type === 'date' && typeof value === 'string') {
+    const d = new Date(value)
+    return Number.isNaN(d.getTime()) ? value : d.toISOString().slice(0, 10)
+  }
+  if (Array.isArray(value)) return value.every((v) => ['string', 'number'].includes(typeof v)) ? value.map(one).join(', ') : null
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return one(value)
+  return null
+}
+
+/**
+ * What the person asked for, from the link, so the confirm page can show it before they press the button: the
+ * email and the request's own fields, as words. It only reads: the link still works afterwards, and nothing about
+ * the request changes. Answers meant only for checks were never stored, and what checks set for the account isn't
+ * shown. An unknown, used or expired link gets the same `badLink` refusal as confirming would.
+ */
+export async function readSignupRequest(payload: Payload, input: { token?: unknown }, req: Req = {}): Promise<{ email: string; details: RequestDetail[] }> {
+  const o = signupOf(payload)
+  const r = { ...req, payload } as Req
+  if (!(await allowed(payload, 'verify', o.clientAddress(r) ?? 'unknown', r))) throw new SignupError('busy', 'Too many tries. Please try again in an hour.', 429)
+  const bad = new SignupError('badLink', 'This link has expired or was already used. You can ask again from the sign-up page.')
+  const token = input?.token
+  if (typeof token !== 'string' || token.length < 20 || token.length > 200) throw bad
+  const where: Where = { and: [{ tokenHash: { equals: hashToken(payload.secret, token) } }, { status: { equals: 'unverified' } }] }
+  const request = ((await payload.find({ collection: o.requests as CollectionSlug, where, limit: 1, pagination: false, ...sys, req: asReq(payload, r) })).docs as Doc[])[0]
+  if (!request || !request.tokenExpires || new Date(request.tokenExpires).getTime() < Date.now()) throw bad
+  const stored = (request.details ?? {}) as Record<string, unknown>
+  const details: RequestDetail[] = []
+  for (const field of o.fields as Record<string, any>[]) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (typeof field.name !== 'string' || field.admin?.hidden || field.hidden) continue
+    const value = showValue(field, stored[field.name])
+    if (value !== null) details.push({ name: field.name, label: labelOf(field), value })
+  }
+  return { email: request.email as string, details }
+}
+
 export type VerifyInput = { token?: unknown; password?: unknown }
 
 /**
