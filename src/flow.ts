@@ -2,7 +2,7 @@ import type { CollectionSlug, Payload, Where } from 'payload'
 
 import type { ID, LimitKind, Req, SignupMode } from './types.js'
 import { MODES } from './types.js'
-import { asReq, hashKey, hashToken, idOf, newToken, normalizeEmail, signupOf, SignupError, transaction, validEmail } from './util.js'
+import { asReq, cookiesOf, hashKey, hashToken, idOf, newToken, normalizeEmail, requestFor, signupOf, SignupError, transaction, validEmail } from './util.js'
 
 type Doc = Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
 const sys = { overrideAccess: true, depth: 0 } as const
@@ -80,6 +80,9 @@ const urls = (payload: Payload) => {
 // ---------------------------------------------------------------------------------------------
 // Submit
 
+/** What a taken request answers. `setCookies` is there only when a check asked for cookies. */
+export type SubmitResult = { ok: true; message: string; setCookies?: string[] }
+
 export type SignupInput = {
   email?: unknown
   /** The request's details, checked against the site's `fields` and kept with the request. */
@@ -96,10 +99,13 @@ export type SignupInput = {
  * Refusals the person can act on (mode, a bad email, a site check, too many tries) throw a `SignupError`.
  * Everything else ends in the same `{ ok: true }` and an email, whether the address is new, already has an
  * account, or is already waiting: the form never tells. Each case does the same lookups.
+ *
+ * Cookies the checks ask for come back as `setCookies`, on the result or on the refusal (`SignupError`), for the
+ * response. Sign-up's own endpoint sets them; a site's own form should too.
  */
-export async function submitSignup(payload: Payload, input: SignupInput, req: Req = {}): Promise<{ ok: true; message: string }> {
+export async function submitSignup(payload: Payload, input: SignupInput, req: Req = {}): Promise<SubmitResult> {
   const o = signupOf(payload)
-  const r = { ...req, payload } as Req
+  const r = await requestFor(payload, req)
   const { mode, message } = await currentMode(payload)
   if (mode === 'closed' || mode === 'invite-only') throw new SignupError(mode === 'closed' ? 'closed' : 'inviteOnly', message ?? 'Sign-up is closed for now.', 403)
 
@@ -124,26 +130,31 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
   const answers = asObject(input.answers)
 
   // Site checks (an age gate, for example). A refusal is shown; a check that breaks refuses (fail closed).
+  // Cookies a check asks for (a "stay blocked" cookie, say) go out with the answer, refusals included.
   const flags: string[] = []
+  const setCookies: string[] = []
+  const withCookies = (error: SignupError) => (setCookies.length ? Object.assign(error, { setCookies: [...setCookies] }) : error)
+  const taken = (): SubmitResult => ({ ok: true, message: RECEIVED, ...(setCookies.length ? { setCookies: [...setCookies] } : {}) })
   let userData: Record<string, unknown> = {}
   for (const check of o.checks) {
     let result
     try {
       result = (await check({ data: details, answers, email, req: r, payload })) ?? {}
+      setCookies.push(...cookiesOf(result.setCookies))
     } catch (error) {
       payload.logger.error({ err: error, msg: 'signup: a site check failed, so refused' })
-      throw new SignupError('checkFailed', 'We couldn\'t take your request just now. Please try again later.', 503)
+      throw withCookies(new SignupError('checkFailed', 'We couldn\'t take your request just now. Please try again later.', 503))
     }
-    if (result.refuse) throw new SignupError('refused', result.refuse)
+    if (result.refuse) throw withCookies(new SignupError('refused', result.refuse))
     if (result.flag) flags.push(result.flag)
     if (result.userData) userData = { ...userData, ...result.userData }
   }
 
   const scope = o.scopeField ? await (o.scopeFor?.(r) ?? null) : null
-  if (o.scopeField && (scope === null || scope === undefined)) throw new SignupError('closed', 'Sign-up is closed for now.', 403)
+  if (o.scopeField && (scope === null || scope === undefined)) throw withCookies(new SignupError('closed', 'Sign-up is closed for now.', 403))
 
   // Per-email limit: past it, quietly do nothing (the same answer as any other request).
-  if (!(await allowed(payload, 'email', email, r))) return { ok: true, message: RECEIVED }
+  if (!(await allowed(payload, 'email', email, r))) return taken()
 
   const token = newToken()
   const outcome = await transaction(payload, r, async (tx) => {
@@ -176,7 +187,7 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
   const name = typeof details.name === 'string' ? details.name : undefined
   if (outcome === 'verify') await send(payload, email, () => o.emails.verify({ email, name, url: u.verify(token), hours: o.verifyHours, req: r, payload }))
   if (outcome === 'hasAccount') await send(payload, email, () => o.emails.alreadyHasAccount({ email, name, signInURL: u.signIn, resetURL: u.reset, req: r, payload }))
-  return { ok: true, message: RECEIVED }
+  return taken()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -191,7 +202,7 @@ export type VerifyInput = { token?: unknown; password?: unknown }
  */
 export async function verifySignup(payload: Payload, input: VerifyInput, req: Req = {}): Promise<{ status: 'pending' | 'active' }> {
   const o = signupOf(payload)
-  const r = { ...req, payload } as Req
+  const r = await requestFor(payload, req)
   const address = o.clientAddress(r)
   if (!(await allowed(payload, 'verify', address ?? 'unknown', r))) throw new SignupError('busy', 'Too many tries. Please try again in an hour.', 429)
   const bad = new SignupError('badLink', 'This link has expired or was already used. You can ask again from the sign-up page.')

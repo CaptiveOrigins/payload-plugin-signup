@@ -15,7 +15,7 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 - **A request** has an email and your own fields (plain Payload fields, so Payload validates them and the admin shows them). No account and no password yet. Sign-up emails a link. Opening it shows a short form: the person chooses their password and presses "Confirm my email". Opening the link alone changes nothing, because mail scanners open links. Only then is the account made, so only the person with the inbox can set one up under that address. In approval mode it can't sign in until it's approved.
 - **The same answer every time:** "Thanks. Check your email to continue." That goes for a new address, one that already has an account (its owner gets an email saying so), and one that's already waiting. The form never tells anyone whether an address has an account, and each case does the same lookups, so the timing gives little away (not measured, so not promised). "Waiting for approval" is only shown at sign-in, after the password matched.
 - **Staff decide in the admin.** Open a request and set Status to Approved or Declined, or select several and use Edit. A waiting request can only be approved or declined; nothing else on it can be changed. Approving activates the account, runs your `onApprove` (roles, memberships), and emails "You're in". Declining deletes the account, which never signed in, and sends a polite email with your optional note. If `onApprove` fails, nothing changes and no email goes out.
-- **Your checks** run before anything is stored, for example an age gate. A check can refuse with a message, flag the request for staff ("minor"), or add values to the new account. Answers meant only for checks (`answers`, such as a birth month and year) are never stored. A check that breaks refuses the request.
+- **Your checks** run before anything is stored, for example an age gate. A check can refuse with a message, flag the request for staff ("minor"), or add values to the new account. Answers meant only for checks (`answers`, such as a birth month and year) are never stored. A check that breaks refuses the request. See [Checks](#checks).
 - **Rate limits** per network address, per email and site-wide. Past the email limit, nothing happens, with the same answer. Use your own limiter, or the built-in one, which stores only hashed keys. A limiter that breaks refuses.
   - The address is the first `x-forwarded-for` entry by default, which a visitor can fake behind proxies that append to it. Give `clientAddress` your host's trusted header (on Vercel, `x-real-ip`). Requests with no address share one "unknown" count.
   - The site-wide limit (200 an hour) is a cheap way for anyone to block sign-up for an hour. On a public site, use `verifyHuman` (Turnstile or similar) as well.
@@ -29,7 +29,7 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 **On its own:** it needs a users auth collection, Payload's email, and your `access.manage`. Checks, roles on approval and a human check are functions you pass in. It imports no other Captive Origins plugin.
 
 **Works with:**
-- **Age Gate:** its `ageGateCheck` goes in `checks`. A too-young person is refused, a minor is flagged in the queue, and `minorUntil` is written to the new account. The birth month and year stay in `answers` and are never stored.
+- **Age Gate:** its `ageGateCheck` goes in `checks`. A too-young person is refused, a minor is flagged in the queue, and `minorUntil` is written to the new account. The birth month and year stay in `answers` and are never stored. Its "stay blocked" cookie comes back through `setCookies` (Age Gate's next release; 0.1.x set it on `req.responseHeaders`, which Payload also sends).
 - **A tenant plugin** (such as Payload's multi-tenant plugin): pass `scopeField` and `scopeFor`, and add `signup-requests` to its collections, so each site sees its own queue.
 
 **Family:** It's part of the **Identity** family (a working draft): plugins designed to sit together for accounts and access. Age Gate is the member it's wired to today.
@@ -51,7 +51,7 @@ export default buildConfig({
         { name: 'lastName', type: 'text', required: true },
       ],
       toUser: (d) => ({ name: `${d.firstName} ${d.lastName}` }),
-      checks: [myAgeGate], // ({ data, answers, email, req, payload }) => { refuse?, flag?, userData? }
+      checks: [myAgeGate], // ({ data, answers, email, req, payload }) => { refuse?, flag?, userData?, setCookies? }
       onApprove: async ({ user, req, payload }) => {
         /* give roles */
       },
@@ -65,12 +65,25 @@ export default buildConfig({
 
 Build the collections' indexes before first use (`signup-requests`, `signup-attempts`, and the new `signupStatus` on your users). If you build your own confirm page, ask for the password there and post `{ token, password }`; never confirm when the page loads. With a tenant plugin, pass `scopeField` and `scopeFor`, and add `signup-requests` to your tenant plugin's collections, so each site sees its own queue. The mode setting is one for the whole install.
 
+## Checks
+
+A check is a function in `checks`, run in order when a request comes in:
+
+```ts
+type Check = (args: { data; answers; email; req: PayloadRequest; payload }) =>
+  { refuse?: string; flag?: string; userData?: Record<string, unknown>; setCookies?: string[] } | void
+```
+
+- `req` is the request itself, headers and cookies included. A check written to take less (`Partial<PayloadRequest>`) still fits. Calling `submitSignup` from your own code with a partial request, or none, is fine: Payload's `createLocalReq` completes it, with empty headers.
+- `setCookies` are whole `Set-Cookie` values. `POST /api/signup/request` sets them on its response, whether the request is taken or refused. `submitSignup` hands them back as `setCookies` on its result, or on the `SignupError` it throws, so your own form can set them. Each must be a single-line string; anything else counts as a broken check and refuses (503 `checkFailed`).
+- Nothing else about the response is a check's to change. Sign-up and its checks don't import each other: the check returns plain values.
+
 ## Endpoints
 
 | Method and path | Body | Answer |
 | --- | --- | --- |
 | `GET /api/signup/mode` | | `{ mode, accepting, message }` |
-| `POST /api/signup/request` | `{ email, details, answers?, humanToken? }` | 202 `{ ok, message }`, or an error `{ error: { code, message } }` |
+| `POST /api/signup/request` | `{ email, details, answers?, humanToken? }` | 202 `{ ok, message }`, or an error `{ error: { code, message } }`, either with any cookies the checks set |
 | `GET /api/signup/verify?token=` | | A small page: choose a password, then confirm |
 | `POST /api/signup/verify` | `{ token, password }` as JSON, or the page's form (`token`, `password`, `confirm`) | JSON `{ status: 'pending' or 'active' }`, or a page |
 

@@ -1,6 +1,6 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
 import { MongoMemoryReplSet } from 'mongodb-memory-server'
-import { buildConfig, getPayload, type Payload, type PayloadRequest } from 'payload'
+import { buildConfig, getPayload, handleEndpoints, type Payload, type PayloadRequest } from 'payload'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { RECEIVED, signupPlugin, submitSignup } from '../src/index.js'
@@ -52,6 +52,24 @@ describe('the built-in rate limiter', () => {
     const stored = JSON.stringify((await payload.find({ collection: 'signup-attempts' as never, pagination: false, overrideAccess: true })).docs)
     expect(stored).not.toMatch(/198\.51\.100|example\.com/)
     expect(stored).toMatch(/[0-9a-f]{64}/)
+  })
+
+  it('gives each client address its own count through the real endpoint, so one person can’t use up everyone’s', async () => {
+    // Before the fix, the endpoint's request reached the limiter without headers, so every visitor shared "unknown".
+    const post = (email: string, address: string) =>
+      handleEndpoints({
+        config: payload.config,
+        request: new Request('http://localhost/api/signup/request', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': address },
+          body: JSON.stringify({ email, details: { name: 'Made Up' } }),
+        }),
+      })
+    expect((await post('f1@example.com', '198.51.100.41')).status).toBe(202)
+    expect((await post('f2@example.com', '198.51.100.41')).status).toBe(202)
+    expect((await post('f3@example.com', '198.51.100.41')).status).toBe(429)
+    // Another client still gets in.
+    expect((await post('f4@example.com', '198.51.100.42')).status).toBe(202)
   })
 })
 

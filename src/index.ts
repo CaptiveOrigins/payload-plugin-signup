@@ -1,5 +1,5 @@
 export { signupPlugin } from './plugin.js'
-export { currentMode, decide, pruneSignupRequests, RECEIVED, submitSignup, verifySignup, type SignupInput, type VerifyInput } from './flow.js'
+export { currentMode, decide, pruneSignupRequests, RECEIVED, submitSignup, verifySignup, type SignupInput, type SubmitResult, type VerifyInput } from './flow.js'
 export { defaultEmails } from './emails.js'
 export { SignupError } from './util.js'
 export type {

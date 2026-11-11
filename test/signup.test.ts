@@ -72,8 +72,8 @@ beforeAll(async () => {
           ],
           toUser: (d) => ({ name: d.name, country: d.country }),
           checks: [
-            ({ data, answers }) => {
-              checkSaw.push({ data, answers })
+            ({ data, answers, req: r }) => {
+              checkSaw.push({ data, answers, cookie: r.headers.get('cookie'), address: r.headers.get('x-forwarded-for') })
               if (checkResult === 'throw') throw new Error('made-up check failure')
               return checkResult
             },
@@ -483,5 +483,77 @@ describe('only an exact yes from access.manage (2026-11-11)', () => {
     await answering(() => true, async () => {
       expect((await rest('signup-requests')).status).toBe(200)
     })
+  })
+})
+
+describe('through the real endpoint: the request itself reaches checks (2026-11-11)', () => {
+  // POST /api/signup/request as a browser sends it, through Payload's own router. Before 0.1.x's fix, Sign-up
+  // handed checks a spread copy of the request, which drops Payload's `headers` getter.
+  const post = (body: Doc, headers: Record<string, string> = {}) =>
+    handleEndpoints({
+      config: payload.config,
+      request: new Request('http://localhost/api/signup/request', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.30', ...headers },
+        body: JSON.stringify({ details: { name: 'Made Up', country: 'US' }, ...body }),
+      }),
+    })
+
+  it('hands checks the request’s headers: its cookies and the client address', async () => {
+    const res = await post({ email: fresh() }, { cookie: 'made-up-preference=1', 'x-forwarded-for': '198.51.100.31' })
+    expect(res.status).toBe(202)
+    expect(checkSaw.at(-1)).toMatchObject({ cookie: 'made-up-preference=1', address: '198.51.100.31' })
+  })
+
+  it('sets a check’s cookies on the response, on a taken request and on a refusal, and keeps them out of the body', async () => {
+    const cookie = 'made-up-check=1; Path=/; HttpOnly; SameSite=Lax'
+    checkResult = { setCookies: [cookie] }
+    const taken = await post({ email: fresh() })
+    expect(taken.status).toBe(202)
+    expect(taken.headers.get('set-cookie')).toBe(cookie)
+    expect(await taken.json()).toEqual({ ok: true, message: RECEIVED })
+
+    checkResult = { refuse: 'Not this time.', setCookies: [cookie] }
+    const refused = await post({ email: fresh() })
+    expect(refused.status).toBe(400)
+    expect(refused.headers.get('set-cookie')).toBe(cookie)
+    expect((await refused.json()).error).toEqual({ code: 'refused', message: 'Not this time.' })
+  })
+
+  it('hands the cookies back to a site’s own form, on the result and on the refusal', async () => {
+    checkResult = { setCookies: ['made-up-check=2'] }
+    await expect(ask(fresh())).resolves.toEqual({ ok: true, message: RECEIVED, setCookies: ['made-up-check=2'] })
+    checkResult = { refuse: 'Not this time.', setCookies: ['made-up-check=3'] }
+    await expect(ask(fresh())).rejects.toMatchObject({ code: 'refused', setCookies: ['made-up-check=3'] })
+  })
+
+  it('counts confirm attempts by the client’s address, not one shared "unknown"', async () => {
+    const seen: string[] = []
+    limiter = (kind, key) => {
+      if (kind === 'verify') seen.push(key)
+      return true
+    }
+    const res = await handleEndpoints({
+      config: payload.config,
+      request: new Request('http://localhost/api/signup/verify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.32' },
+        body: JSON.stringify({ token: 'x'.repeat(43), password: PW }),
+      }),
+    })
+    expect(res.status).toBe(400)
+    expect(seen).toEqual(['198.51.100.32'])
+  })
+
+  it('refuses when a check returns cookies that could split the header (fail closed)', async () => {
+    const email = fresh()
+    checkResult = { setCookies: ['made-up=1\r\nX-Made-Up: injected'] }
+    const res = await post({ email })
+    expect(res.status).toBe(503)
+    expect(res.headers.get('set-cookie')).toBeNull()
+    expect(res.headers.get('x-made-up')).toBeNull()
+    checkResult = { setCookies: 'made-up=1' as never }
+    expect((await post({ email: fresh() })).status).toBe(503)
+    expect(await requests(email)).toEqual([])
   })
 })

@@ -2,6 +2,16 @@
 
 Kept by this repo's owning session, per `~/Code/CLAUDE.md`, "Test self-audits". Newest first.
 
+## 2026-11-11: the request itself reaches checks; checks may set cookies
+
+Suite: 30 tests before, 36 after (`npx vitest run`). Prompted by the combo test with Age Gate (branch `combo-tests`), which found that the endpoint broke the pairing.
+
+- **The gaps.** Every test called `submitSignup` directly with a plain object, so nothing went through `POST /api/signup/request` with a real request. There, `{ ...req, payload }` dropped Payload's `headers` getter: checks saw no headers (Age Gate threw, so everyone got 503), and the limiter saw no address (one "unknown" count for the whole site). A check had no way to set a cookie on the response.
+- **The change.** `requestFor` (`src/util.ts`) uses Payload's request as it is and completes a partial one with `createLocalReq`; `submitSignup` and `verifySignup` use it. Copies made for transactions keep `headers`. `CheckResult.setCookies`, set by the endpoint on taken and refused requests, handed back on the result and on `SignupError`.
+- **Tests added.** Through the real endpoint: two addresses get separate built-in limiter counts (the third from one address is 429, the other address still 202); a check sees the request's cookie and address; confirm attempts are counted by address too; a check's cookies are set on a 202 and on a 400 refusal and stay out of the body; `submitSignup` returns them on the result and the error; a cookie with a line break, or not a list, refuses with 503 and sets nothing.
+- **Mutation checks.** 6 mutations, each a Python string replace, restored exactly (checked by SHA-256). All 6 fail the suite: the spread copy put back in `submitSignup` (3 tests fail) and in `verifySignup` (1); the endpoint not setting the cookies; no validation of `setCookies`; a refusal without its cookies; cookies not collected.
+- **Skipped.** `verifySignup` through the endpoint with a header-reading hook: no check runs at confirm on this branch.
+
 ## 2026-11-11: only an exact `true` from `access.manage` passes
 
 Suite: 28 tests before, 30 after (`npx vitest run`, real Payload, in-memory MongoDB, made-up applicants at example.com). Prompted by an access-control sweep across the plugins; the fix follows payload-plugin-sponsors.

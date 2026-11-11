@@ -3,9 +3,14 @@ import type { Endpoint, PayloadRequest } from 'payload'
 import { currentMode, submitSignup, verifySignup } from './flow.js'
 import { SignupError } from './util.js'
 
-const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
+/** A JSON answer. `setCookies` are the cookies the site's checks asked for, set on this response. */
+const json = (body: unknown, status = 200, setCookies: string[] = []) => {
+  const headers = new Headers({ 'Cache-Control': 'no-store' })
+  for (const cookie of setCookies) headers.append('Set-Cookie', cookie)
+  return Response.json(body, { status, headers })
+}
 const failure = (error: unknown, req: PayloadRequest) => {
-  if (error instanceof SignupError) return json({ error: { code: error.code, message: error.message } }, error.status)
+  if (error instanceof SignupError) return json({ error: { code: error.code, message: error.message } }, error.status, error.setCookies)
   req.payload.logger.error({ err: error, msg: 'signup: request failed' })
   return json({ error: { code: 'error', message: 'Something went wrong. Please try again later.' } }, 500)
 }
@@ -59,8 +64,8 @@ export const signupEndpoints: Endpoint[] = [
     handler: async (req) => {
       try {
         const b = await body(req)
-        const out = await submitSignup(req.payload, { email: b.email, details: b.details, answers: b.answers, humanToken: typeof b.humanToken === 'string' ? b.humanToken : undefined }, req)
-        return json(out, 202)
+        const { setCookies, ...out } = await submitSignup(req.payload, { email: b.email, details: b.details, answers: b.answers, humanToken: typeof b.humanToken === 'string' ? b.humanToken : undefined }, req)
+        return json(out, 202, setCookies)
       } catch (error) {
         return failure(error, req)
       }

@@ -27,10 +27,19 @@ export type CheckResult = {
   flag?: string
   /** Extra values for the new user (for example a minor flag), merged after `toUser`. */
   userData?: Record<string, unknown>
+  /**
+   * `Set-Cookie` header values for the response (for example a "stay blocked" cookie), refusals included. Sign-up's
+   * endpoint sets them; `submitSignup` hands them back for a site's own form. Single-line strings only: anything
+   * else is a broken check, and refuses.
+   */
+  setCookies?: string[]
 }
 
-/** `data` is the request's details (kept); `answers` are for checks only and never stored. */
-export type Check = (args: { data: Record<string, unknown>; answers: Record<string, unknown>; email: string; req: Req; payload: Payload }) => CheckResult | void | Promise<CheckResult | void>
+/**
+ * `data` is the request's details (kept); `answers` are for checks only and never stored. `req` is the request
+ * itself, headers and all. A check typed to take less (a `Partial<PayloadRequest>`) fits too.
+ */
+export type Check = (args: { data: Record<string, unknown>; answers: Record<string, unknown>; email: string; req: PayloadRequest; payload: Payload }) => CheckResult | void | Promise<CheckResult | void>
 
 export type Email = { subject: string; html: string; text: string }
 export type EmailContext = { email: string; name?: string; req: Req; payload: Payload }
