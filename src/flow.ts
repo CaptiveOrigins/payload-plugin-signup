@@ -131,7 +131,7 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
     try {
       result = (await check({ data: details, answers, email, req: r, payload })) ?? {}
     } catch (error) {
-      payload.logger.error({ err: error, msg: 'signup: a site check failed, so refused' })
+      payload.logger.error({ err: { name: (error as Error)?.name }, msg: 'signup: a site check failed, so refused' })
       throw new SignupError('checkFailed', 'We couldn\'t take your request just now. Please try again later.', 503)
     }
     if (result.refuse) throw new SignupError('refused', result.refuse)
