@@ -1,5 +1,6 @@
-import type { CollectionConfig, Field, GlobalConfig } from 'payload'
+import type { Access, CollectionConfig, Field, GlobalConfig, PayloadRequest } from 'payload'
 
+import { isManager } from './access.js'
 import { decide } from './flow.js'
 import { MODES, type ResolvedSignup } from './types.js'
 import { SignupError } from './util.js'
@@ -8,6 +9,8 @@ const nobody = () => false
 
 /** Sign-up requests: the queue staff work through. Made only by the plugin; staff change only the decision. */
 export function requestsCollection(o: ResolvedSignup): CollectionConfig {
+  // Only an exact `true` from `access.manage` makes a manager; a truthy value, a query or a thrown error is a no.
+  const manager: Access = (args) => isManager(o, args)
   const internal = { hidden: true }
   return {
     slug: o.requests,
@@ -21,7 +24,7 @@ export function requestsCollection(o: ResolvedSignup): CollectionConfig {
         `${o.retentionDays} days.`,
       listSearchableFields: ['email'],
     },
-    access: { read: o.manage, update: o.manage, create: nobody, delete: o.manage },
+    access: { read: manager, update: manager, create: nobody, delete: manager },
     fields: [
       { name: 'email', type: 'email', required: true, index: true, admin: { readOnly: true } },
       {
@@ -76,11 +79,12 @@ export function requestsCollection(o: ResolvedSignup): CollectionConfig {
 
 /** The mode, and what the form says while sign-up is shut. */
 export function settingsGlobal(o: ResolvedSignup): GlobalConfig {
+  const manager: Access = (args) => isManager(o, args)
   return {
     slug: o.settings,
     label: 'Sign-up settings',
     admin: { group: o.adminGroup },
-    access: { read: o.manage, update: o.manage },
+    access: { read: manager, update: manager },
     fields: [
       {
         name: 'mode',
@@ -133,14 +137,10 @@ export function signupStatusField(o: ResolvedSignup): Field {
       create: nobody,
       update: nobody,
       read: async (args) => {
-        const { req, doc } = args as { req: { user?: { id?: unknown } | null }; doc?: { id?: unknown } }
+        const { req, doc } = args as { req: PayloadRequest; doc?: { id?: unknown } }
         if (!req.user) return false
         if (doc?.id !== undefined && String(req.user.id) === String(doc.id)) return true
-        try {
-          return (await o.manage(args as never)) === true
-        } catch {
-          return false
-        }
+        return isManager(o, args as { req: PayloadRequest })
       },
     },
     admin: { position: 'sidebar', readOnly: true, description: 'Set by sign-up. Only active accounts can sign in.' },

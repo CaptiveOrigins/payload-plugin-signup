@@ -2,6 +2,16 @@
 
 Kept by this repo's owning session, per `~/Code/CLAUDE.md`, "Test self-audits". Newest first.
 
+## 2026-11-11: only an exact `true` from `access.manage` passes
+
+Suite: 28 tests before, 30 after (`npx vitest run`, real Payload, in-memory MongoDB, made-up applicants at example.com). Prompted by an access-control sweep across the plugins; the fix follows payload-plugin-sponsors.
+
+- **The gap.** `access.manage` was passed raw as the read, update and delete access of sign-up requests (applicants' emails and details) and as the settings global's read and update. A truthy answer like `1` was a yes, an object was read by Payload as a query (so `{ email: { exists: true } }` would list every request), and a throw became a 500. `signupStatus` already required `=== true`.
+- **The change.** `src/access.ts`: `exactlyTrue` (only `true` passes; a throw or rejection is `false`) and `isManager` (signed in, and `access.manage` answered exactly `true`). The requests collection, the settings global and `signupStatus` all use it. `access.manage` stays typed as Payload's `Access`; its answer is never passed to Payload.
+- **Tests.** "only an exact yes from access.manage": each of `1`, `'yes'`, `{}`, a query-shaped object, a thrown error and a rejected promise. Staff can't list, read, decide or delete requests, read or change the settings, or see another account's `signupStatus`; nothing changes. Signed out is a no even with `true`. With `true`, staff see every request and the settings, and decide. REST through `handleEndpoints` with a real login and a throwing `access.manage`: 403 for the queue and the settings, never a 500; 200 with `true`.
+- **Mutation checks.** 9 mutations, each a Python string replace on the file, restored byte for byte (checked by SHA-256). All 9 fail the suite: truthy passing in `exactlyTrue`; errors rethrown; `isManager` without its sign-in check; the raw `o.manage` put back at requests read, update and delete and settings read and update; a truthy `signupStatus` check.
+- **Skipped.** Per-site queues under a tenant plugin come from that plugin's access, not this one, and aren't tested here.
+
 ## 2026-11-10: second audit, after the security read
 
 Plugin Security's two required fixes changed the flow (the password is chosen when confirming; `access.manage` is required). Tests rewritten to match, and these added:

@@ -77,7 +77,11 @@ export type SignupPluginOptions = {
   clientAddress?: (req: Req) => string | null
   /** A human check, such as Turnstile. Returns true for a person; false or throwing refuses. */
   verifyHuman?: (args: { token: string | undefined; address: string | null; req: Req }) => boolean | Promise<boolean>
-  /** Who decides requests and changes the mode. Required: the plugin won't start without it, so a site can't leave the queue open to every signed-in member by accident. */
+  /**
+   * Who decides requests and changes the mode. Required: the plugin won't start without it, so a site can't leave the
+   * queue open to every signed-in member by accident. Only an answer of exactly `true`, for a signed-in user, counts;
+   * anything else, a query (`Where`) or a thrown error included, is a no. Typed as Payload's `Access` so existing rules fit.
+   */
   access: { manage: Access }
   /** A field that separates sites, such as `tenant`. The request takes its value from `scopeFor`. */
   scopeField?: string

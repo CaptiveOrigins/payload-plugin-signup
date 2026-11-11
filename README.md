@@ -22,7 +22,7 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 - **No back door:** once a site has users, an account can't be created by a signed-out API call. Accounts come through sign-up, from staff, or from your own code.
 - **Retention:** requests decided, abandoned or never confirmed are deleted after 90 days (`retentionDays`), with any account that was never confirmed. Waiting requests stay until someone decides them. Run `pruneSignupRequests(payload)` daily.
 - **A human check** (Turnstile or similar) through `verifyHuman`. Nothing is wired by default; on a public site, wire one.
-- **Who manages it is yours to say, and required.** `access.manage` decides who sees and decides requests and changes the mode. The plugin won't start without it, so a site can't leave the queue open to every signed-in member. `signupStatus` is shown only to the account itself and to managers. What checks set for the account (a minor flag, say) is kept out of the queue's view.
+- **Who manages it is yours to say, and required.** `access.manage` decides who sees and decides requests and changes the mode, and only an exact `true` counts: see [Access](#access). The plugin won't start without it, so a site can't leave the queue open to every signed-in member. `signupStatus` is shown only to the account itself and to managers. What checks set for the account (a minor flag, say) is kept out of the queue's view.
 
 ## On its own, and with others
 
@@ -75,6 +75,23 @@ Build the collections' indexes before first use (`signup-requests`, `signup-atte
 | `POST /api/signup/verify` | `{ token, password }` as JSON, or the page's form (`token`, `password`, `confirm`) | JSON `{ status: 'pending' or 'active' }`, or a page |
 
 Error codes: `closed`, `inviteOnly`, `email`, `password`, `passwordMismatch` (the page only), `refused`, `checkFailed`, `human`, `busy`, `badLink`, `hasAccount` (an account was made for the address since they asked). The same functions are exported for your own pages: `submitSignup`, `verifySignup`, `currentMode`.
+
+## Access
+
+`access.manage` decides who manages sign-up, and only an answer of exactly `true`, for a signed-in
+user, counts. Anything else is a no: `false`, `1`, `'yes'`, an object, a query (`Where`), or an error
+thrown or rejected. An error doesn't escape as a 500: REST answers 403, as for anyone else who isn't a
+manager. It's typed as Payload's `Access` so existing rules fit, but what it returns is never passed to
+Payload, so an object that looks like a query can't widen the queue to every request.
+
+| Where | A manager | Anyone else, or signed out |
+|---|---|---|
+| Sign-up requests (applicants' emails and details) | Reads, decides, deletes | Nothing |
+| Sign-up settings (the mode and messages) | Reads and changes | Nothing |
+| An account's `signupStatus` | Reads | Only the account itself reads its own |
+
+Nobody creates requests or changes `signupStatus` directly: the plugin does. Each site seeing only its
+own queue comes from a tenant plugin with `scopeField` (above), not from a query in `access.manage`.
 
 ## Commands
 

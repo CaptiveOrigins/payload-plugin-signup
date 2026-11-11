@@ -1,6 +1,6 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
 import { MongoMemoryReplSet } from 'mongodb-memory-server'
-import { buildConfig, getPayload, type Payload, type PayloadRequest } from 'payload'
+import { buildConfig, getPayload, handleEndpoints, type Payload, type PayloadRequest } from 'payload'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { pruneSignupRequests, RECEIVED, signupPlugin, submitSignup, verifySignup, type CheckResult, type LimitKind } from '../src/index.js'
@@ -17,6 +17,8 @@ let approveThrows = false
 let approved: string[] = []
 let limiter: ((kind: LimitKind, key: string) => boolean) | null = null
 let human: boolean | 'throw' = true
+/** When set, what `access.manage` answers instead of the site's rule (staff by role). */
+let manageAnswer: (() => unknown) | null = null
 let admin: Doc
 let member: Doc
 const PW = 'correct horse battery'
@@ -80,7 +82,7 @@ beforeAll(async () => {
             if (approveThrows) throw new Error('made-up refusal')
             approved.push(String(user.email))
           },
-          access: { manage: ({ req: r }) => (r.user as { role?: string } | null)?.role === 'staff' },
+          access: { manage: (({ req: r }: { req: PayloadRequest }) => (manageAnswer ? manageAnswer() : (r.user as { role?: string } | null)?.role === 'staff')) as never },
           rateLimit: async (kind, key) => (limiter ? limiter(kind, key) : true),
           verifyHuman: async () => {
             if (human === 'throw') throw new Error('made-up outage')
@@ -400,5 +402,86 @@ describe('retention', () => {
     expect((await pruneSignupRequests(payload, new Date(Date.now() + 91 * 86_400_000))).requests).toBeGreaterThanOrEqual(3)
     expect([(await requests(a)).length, (await requests(b)).length, (await requests(c)).length, (await requests(d)).length]).toEqual([0, 0, 1, 0])
     expect([(await users(a)).length, (await users(c)).length]).toEqual([1, 1])
+  })
+})
+
+describe('only an exact yes from access.manage (2026-11-11)', () => {
+  // Each a no: truthy values, objects (one a query matching every request, which must not widen reads), and errors.
+  const noes: [string, () => unknown][] = [
+    ['1', () => 1],
+    ["'yes'", () => 'yes'],
+    ['{}', () => ({})],
+    ['a query-shaped object', () => ({ email: { exists: true } })],
+    ['a thrown error', () => {
+      throw new Error('made-up directory outage')
+    }],
+    ['a rejected promise', async () => {
+      throw new Error('made-up directory outage')
+    }],
+  ]
+  const answering = async (answer: () => unknown, body: () => Promise<void>) => {
+    manageAnswer = answer
+    try {
+      await body()
+    } finally {
+      manageAnswer = null
+    }
+  }
+  let signedIn: Doc
+  beforeEach(() => {
+    signedIn = { overrideAccess: false, ...as(admin) }
+  })
+
+  it('keeps the queue, applicants\' emails, signupStatus and the settings from anything but true', async () => {
+    const email = fresh()
+    await ask(email)
+    await confirm(email)
+    const [r] = await requests(email)
+    const [pending] = await users(email)
+    const all = (await payload.count({ collection: 'signup-requests' as never, overrideAccess: true })).totalDocs
+    expect(all).toBeGreaterThan(1)
+    for (const [label, answer] of noes) {
+      await answering(answer, async () => {
+        await expect(payload.find({ collection: 'signup-requests' as never, pagination: false, ...signedIn }), label).rejects.toThrow()
+        await expect(payload.findByID({ collection: 'signup-requests' as never, id: r!.id, ...signedIn }), label).rejects.toThrow()
+        await expect(payload.update({ collection: 'signup-requests' as never, id: r!.id, data: { status: 'approved' } as never, ...signedIn }), label).rejects.toThrow()
+        await expect(payload.delete({ collection: 'signup-requests' as never, id: r!.id, ...signedIn }), label).rejects.toThrow()
+        await expect(payload.findGlobal({ slug: 'signup-settings' as never, ...signedIn }), label).rejects.toThrow()
+        await expect(payload.updateGlobal({ slug: 'signup-settings' as never, data: { mode: 'open' } as never, ...signedIn }), label).rejects.toThrow()
+        const seen = (await payload.findByID({ collection: 'users', id: pending!.id, ...signedIn })) as Doc
+        expect(seen.signupStatus, label).toBeUndefined()
+      })
+    }
+    expect((await requests(email))[0]).toMatchObject({ status: 'pending' })
+    expect((await payload.count({ collection: 'signup-requests' as never, overrideAccess: true })).totalDocs).toBe(all)
+    expect(((await payload.findGlobal({ slug: 'signup-settings' as never, overrideAccess: true })) as Doc).mode).toBe('approval')
+    // Signed out is never a manager, even when access.manage says true.
+    await answering(() => true, async () => {
+      await expect(payload.find({ collection: 'signup-requests' as never, overrideAccess: false }), 'signed out').rejects.toThrow()
+      await expect(payload.findGlobal({ slug: 'signup-settings' as never, overrideAccess: false }), 'signed out').rejects.toThrow()
+    })
+    // With exactly true, staff see every request and the settings, and decide.
+    await answering(() => true, async () => {
+      expect((await payload.find({ collection: 'signup-requests' as never, pagination: false, ...signedIn })).totalDocs).toBe(all)
+      expect(((await payload.findGlobal({ slug: 'signup-settings' as never, ...signedIn })) as Doc).mode).toBe('approval')
+      expect(((await payload.findByID({ collection: 'users', id: pending!.id, ...signedIn })) as Doc).signupStatus).toBe('pending')
+      await payload.update({ collection: 'signup-requests' as never, id: r!.id, data: { status: 'declined' } as never, ...signedIn })
+    })
+    expect((await requests(email))[0]).toMatchObject({ status: 'declined' })
+  })
+
+  it('answers REST with 403, never a 500, when access.manage throws', async () => {
+    const { token } = await login('staff@example.com', 'staff password long')
+    const rest = (path: string) =>
+      handleEndpoints({ config: payload.config, request: new Request(`http://localhost/api/${path}`, { headers: { Authorization: `JWT ${token}` } }) })
+    await answering(() => {
+      throw new Error('made-up directory outage')
+    }, async () => {
+      expect((await rest('signup-requests')).status).toBe(403)
+      expect((await rest('globals/signup-settings')).status).toBe(403)
+    })
+    await answering(() => true, async () => {
+      expect((await rest('signup-requests')).status).toBe(200)
+    })
   })
 })
