@@ -41,6 +41,14 @@ export type CheckResult = {
  */
 export type Check = (args: { data: Record<string, unknown>; answers: Record<string, unknown>; email: string; req: PayloadRequest; payload: Payload }) => CheckResult | void | Promise<CheckResult | void>
 
+/**
+ * A check run again when the person confirms, before the account is made, for what can change in the meantime
+ * (a domain blocked since, sign-up closed to a group). It sees the stored details and the request's flag, never
+ * the check-only answers, which were never stored. A refusal declines the request; a check that throws refuses
+ * for now and the link keeps working.
+ */
+export type ConfirmCheck = (args: { data: Record<string, unknown>; email: string; flag: string | null; req: Req; payload: Payload }) => CheckResult | void | Promise<CheckResult | void>
+
 export type Email = { subject: string; html: string; text: string }
 export type EmailContext = { email: string; name?: string; req: Req; payload: Payload }
 export type Emails = {
@@ -70,6 +78,8 @@ export type SignupPluginOptions = {
   fields?: Field[]
   /** Run at submit, in order. A refusal stops the request; a check that throws refuses it (fail closed). */
   checks?: Check[]
+  /** Run when the person confirms, in order, before the account is made. Optional; see `ConfirmCheck`. */
+  confirmChecks?: ConfirmCheck[]
   /** Map a request's details onto the new user. Default: copies `name` when there is one. */
   toUser?: (data: Record<string, unknown>) => Record<string, unknown>
   /** After approval (or verification in open mode), inside the same transaction: give roles, memberships. Throw to refuse. */
@@ -98,6 +108,12 @@ export type SignupPluginOptions = {
   scopeFor?: (req: Req) => ID | null | Promise<ID | null>
   /** Days a decided, abandoned or unverified request is kept. Default 90. */
   retentionDays?: number
+  /**
+   * Which of your fields the confirm page shows, by name, so the person can see it's their request. Default: none,
+   * only the email. Someone who mistypes their address sends the link to a stranger's inbox, so show only what's
+   * safe for a stranger to read. Hidden fields and fields with their own read access are never shown.
+   */
+  confirmShows?: string[]
   /** Hours a verification link works. Default 48. */
   verifyHours?: number
   /** Minimum password length. Default 10. */
@@ -115,6 +131,7 @@ export type ResolvedSignup = Required<Pick<SignupPluginOptions, 'retentionDays' 
   attempts: string
   fields: Field[]
   checks: Check[]
+  confirmChecks: ConfirmCheck[]
   toUser: NonNullable<SignupPluginOptions['toUser']>
   onApprove?: SignupPluginOptions['onApprove']
   emails: Emails
@@ -127,4 +144,5 @@ export type ResolvedSignup = Required<Pick<SignupPluginOptions, 'retentionDays' 
   scopeField?: string
   scopeFor?: SignupPluginOptions['scopeFor']
   forceMode: SignupMode | null
+  confirmShows: string[]
 }

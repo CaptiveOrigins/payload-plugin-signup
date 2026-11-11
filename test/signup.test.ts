@@ -3,7 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { buildConfig, getPayload, handleEndpoints, type Payload, type PayloadRequest } from 'payload'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { pruneSignupRequests, RECEIVED, signupPlugin, submitSignup, verifySignup, type CheckResult, type LimitKind } from '../src/index.js'
+import { pruneSignupRequests, readSignupRequest, RECEIVED, signupPlugin, submitSignup, verifySignup, type CheckResult, type LimitKind } from '../src/index.js'
 
 // Made-up people at example.com, on a throwaway in-memory database.
 type Doc = Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -40,6 +40,9 @@ const login = (email: string, password = PW) => payload.login({ collection: 'use
 let n = 0
 const fresh = () => `person${++n}@example.com`
 
+let confirmResult: CheckResult | 'throw' | undefined
+const confirmSaw: Doc[] = []
+
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
   payload = await getPayload({
@@ -69,13 +72,26 @@ beforeAll(async () => {
           fields: [
             { name: 'name', type: 'text', required: true },
             { name: 'country', type: 'text', required: true },
+            { name: 'pet', type: 'text', label: '<i>Pet</i>' },
+            { name: 'school', type: 'text' },
+            { name: 'staffNote', type: 'text', admin: { hidden: true } },
+            { name: 'birthDate', type: 'text', access: { read: () => false } },
           ],
+          // Listed: name, country and pet. school isn't listed; staffNote and birthDate are listed but must never show.
+          confirmShows: ['name', 'country', 'pet', 'staffNote', 'birthDate'],
           toUser: (d) => ({ name: d.name, country: d.country }),
           checks: [
             ({ data, answers, req: r }) => {
               checkSaw.push({ data, answers, cookie: r.headers.get('cookie'), address: r.headers.get('x-forwarded-for') })
               if (checkResult === 'throw') throw new Error('made-up check failure')
               return checkResult
+            },
+          ],
+          confirmChecks: [
+            (args) => {
+              confirmSaw.push(args)
+              if (confirmResult === 'throw') throw new Error('made-up confirm check failure')
+              return confirmResult
             },
           ],
           onApprove: async ({ user }) => {
@@ -322,6 +338,101 @@ describe('refusals, failing closed', () => {
   })
 })
 
+describe('the confirm page shows what was asked for', () => {
+  const getPage = async (token: string) => {
+    const endpoint = payload.config.endpoints!.find((e) => e.path === '/signup/verify' && e.method === 'get')!
+    const res = await endpoint.handler({ payload, headers: new Headers({ 'x-forwarded-for': '203.0.113.7' }), url: `https://site.example.com/api/signup/verify?token=${encodeURIComponent(token)}` } as never)
+    return { status: res.status, html: await res.text() }
+  }
+
+  it('reads the email and the details by token, without using up the link or showing what checks set', async () => {
+    const email = fresh()
+    checkResult = { userData: { minorUntil: '2031-01' } }
+    await submitSignup(payload, { email, details: { name: 'Made Up', country: 'US' }, answers: { birthYear: 2015 } }, req())
+    const token = tokenFrom(email)
+    const shown = await readSignupRequest(payload, { token }, req())
+    expect(shown).toEqual({ email, details: [{ name: 'name', label: 'Name', value: 'Made Up' }, { name: 'country', label: 'Country', value: 'US' }] })
+    expect(JSON.stringify(shown)).not.toMatch(/2031|2015/)
+    // Reading twice changes nothing; the link still confirms.
+    await readSignupRequest(payload, { token }, req())
+    expect([(await requests(email))[0]!.status, (await users(email)).length]).toEqual(['unverified', 0])
+    expect(await verifySignup(payload, { token, password: PW }, req())).toEqual({ status: 'pending' })
+    // Once used, the link reads as dead, the same as a made-up one.
+    await expect(readSignupRequest(payload, { token }, req())).rejects.toMatchObject({ code: 'badLink' })
+    await expect(readSignupRequest(payload, { token: 'x'.repeat(43) }, req())).rejects.toMatchObject({ code: 'badLink' })
+    await expect(readSignupRequest(payload, { token: 5 }, req())).rejects.toMatchObject({ code: 'badLink' })
+  })
+
+  it('refuses an expired link, and counts reads against the verify limit', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    limiter = (kind) => kind !== 'verify'
+    await expect(readSignupRequest(payload, { token }, req())).rejects.toMatchObject({ code: 'busy' })
+    limiter = null
+    const [r] = await requests(email)
+    await payload.update({ collection: 'signup-requests' as never, id: r!.id, data: { tokenExpires: new Date(Date.now() - 1000).toISOString() } as never, overrideAccess: true, context: { signupInternal: true } })
+    await expect(readSignupRequest(payload, { token }, req())).rejects.toMatchObject({ code: 'badLink' })
+  })
+
+  it('shows only the fields the site listed, never hidden or read-restricted ones, even when listed', async () => {
+    const email = fresh()
+    await submitSignup(payload, { email, details: { name: 'Made Up', country: 'US', pet: 'Gecko', school: 'Made-up School', staffNote: 'internal', birthDate: '2015-04-01' } }, req())
+    const shown = await readSignupRequest(payload, { token: tokenFrom(email) }, req())
+    expect(shown.details.map((d) => d.name)).toEqual(['name', 'country', 'pet'])
+    expect(JSON.stringify(shown)).not.toMatch(/Made-up School|internal|2015/)
+  })
+
+  it('keeps the summary on a password retry, and a mismatch still counts against the verify limit', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    const endpoint = payload.config.endpoints!.find((e) => e.path === '/signup/verify' && e.method === 'post')!
+    const post = async (password: string, confirm: string) => {
+      const body = new URLSearchParams({ token, password, confirm })
+      const headers = new Headers({ 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-for': '203.0.113.7' })
+      const res = await endpoint.handler({ payload, headers, formData: async () => new Request('http://x', { method: 'POST', body, headers }).formData() } as never)
+      return { status: res.status, html: await res.text() }
+    }
+    const short = await post('short', 'short')
+    expect(short.status).toBe(400)
+    expect(short.html).toMatch(/at least 10 characters/)
+    expect(short.html).toContain(`You asked for an account as <strong>${email}</strong>`)
+    const kinds: string[] = []
+    limiter = (kind) => (kinds.push(kind), true)
+    const mismatch = await post(PW, PW + 'x')
+    expect(mismatch.html).toMatch(/Please type the same password twice/)
+    expect(mismatch.html).toContain('<dl>')
+    expect(kinds).toEqual(['verify'])
+    expect([(await requests(email))[0]!.status, (await users(email)).length]).toEqual(['unverified', 0])
+  })
+
+  it('shows the request above the password form, escaped, and says at once when a link is dead', async () => {
+    const email = fresh()
+    await submitSignup(payload, { email, details: { name: '<b>Made</b> & Up', country: 'US', pet: 'Gecko' } }, req())
+    const token = tokenFrom(email)
+    // Payload's email field refuses this address, but the page mustn't rely on that: write it straight to the database.
+    const [r] = await requests(email)
+    await payload.db.updateOne({ collection: 'signup-requests', where: { id: { equals: r!.id } }, data: { email: '<img/src=x/onerror=alert(1)>@a.bc' } } as never)
+    const ok = await getPage(token)
+    expect(ok.status).toBe(200)
+    expect(ok.html).toContain('You asked for an account as <strong>&lt;img/src=x/onerror=alert(1)&gt;@a.bc</strong>')
+    expect(ok.html).toContain('<dt>Name</dt><dd>&lt;b&gt;Made&lt;/b&gt; &amp; Up</dd>')
+    expect(ok.html).toContain('<dt>&lt;i&gt;Pet&lt;/i&gt;</dt>')
+    expect(ok.html).not.toMatch(/<b>Made<\/b>|<img|<i>Pet/)
+    expect(ok.html.indexOf('<dl>')).toBeLessThan(ok.html.indexOf('<form'))
+    const dead = await getPage('x'.repeat(43))
+    expect(dead.status).toBe(400)
+    expect(dead.html).toMatch(/expired or was already used/)
+    expect(dead.html).not.toContain('<form')
+    // A limiter that refuses still leaves the form, without the summary, so the link can be used later.
+    limiter = (kind) => kind !== 'verify'
+    const busy = await getPage(token)
+    expect(busy.html).toContain('<form')
+    expect(busy.html).not.toContain('<dl>')
+  })
+})
+
 describe('rate limits', () => {
   it('refuses past the address or site limit, goes quiet past the email limit, and refuses when the limiter breaks', async () => {
     limiter = (kind) => kind !== 'address'
@@ -555,5 +666,53 @@ describe('through the real endpoint: the request itself reaches checks (2026-11-
     checkResult = { setCookies: 'made-up=1' as never }
     expect((await post({ email: fresh() })).status).toBe(503)
     expect(await requests(email)).toEqual([])
+  })
+})
+
+describe('checks again at confirm', () => {
+  it('declines at confirm when a check now refuses: no account, a dead link, and asking again changes nothing', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    confirmResult = { refuse: 'This address can’t join right now.' }
+    await expect(verifySignup(payload, { token, password: PW }, req())).rejects.toMatchObject({ code: 'refused', message: 'This address can’t join right now.' })
+    confirmResult = undefined
+    expect((await users(email)).length).toBe(0)
+    expect((await requests(email))[0]).toMatchObject({ status: 'declined' })
+    // The link's hash is gone from the stored row, not only refused by status.
+    expect(await (payload.db as any).collections['signup-requests'].findOne({ email }).lean()).toMatchObject({ tokenHash: null, tokenExpires: null }) // eslint-disable-line @typescript-eslint/no-explicit-any
+    await expect(verifySignup(payload, { token, password: PW }, req())).rejects.toMatchObject({ code: 'badLink' })
+    const before = mail.length
+    await expect(ask(email)).resolves.toEqual({ ok: true, message: RECEIVED })
+    expect(mail.length).toBe(before)
+  })
+
+  it('refuses for now when a confirm check breaks, keeping the request and the same link for later', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    confirmResult = 'throw'
+    await expect(verifySignup(payload, { token, password: PW }, req())).rejects.toMatchObject({ code: 'checkFailed', status: 503 })
+    confirmResult = undefined
+    expect([(await users(email)).length, (await requests(email))[0]!.status]).toEqual([0, 'unverified'])
+    await expect(verifySignup(payload, { token, password: PW }, req())).resolves.toMatchObject({ status: expect.any(String) })
+    expect((await users(email)).length).toBe(1)
+  })
+
+  it('sees the stored details and flag but never the check-only answers, and adds its own flag and user data', async () => {
+    const email = fresh()
+    checkResult = { flag: 'minor' }
+    await ask(email, { answers: { birthMonth: '2015-04' } })
+    checkResult = {}
+    confirmSaw.length = 0
+    confirmResult = { flag: 'domain watched', userData: { role: 'member' } }
+    await confirm(email)
+    confirmResult = undefined
+    expect(confirmSaw).toHaveLength(1)
+    expect(confirmSaw[0]).toMatchObject({ email, flag: 'minor', data: { name: 'Made Up', country: 'US' } })
+    expect(JSON.stringify(confirmSaw[0]!.data)).not.toContain('2015-04')
+    expect('answers' in confirmSaw[0]!).toBe(false)
+    expect((await requests(email))[0]).toMatchObject({ flag: 'minor; domain watched' })
+    expect((await users(email))[0]).toMatchObject({ role: 'member' })
   })
 })

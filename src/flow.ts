@@ -142,7 +142,7 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
       result = (await check({ data: details, answers, email, req: r, payload })) ?? {}
       setCookies.push(...cookiesOf(result.setCookies))
     } catch (error) {
-      payload.logger.error({ err: error, msg: 'signup: a site check failed, so refused' })
+      payload.logger.error({ err: { name: (error as Error)?.name }, msg: 'signup: a site check failed, so refused' })
       throw withCookies(new SignupError('checkFailed', 'We couldn\'t take your request just now. Please try again later.', 503))
     }
     if (result.refuse) throw withCookies(new SignupError('refused', result.refuse))
@@ -193,6 +193,71 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
 // ---------------------------------------------------------------------------------------------
 // Verify
 
+export type RequestDetail = { name: string; label: string; value: string }
+
+/** A field's label as written in the config, in plain text. Labels given per language use English, then any. */
+function labelOf(field: Record<string, any>): string { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const l = field.label
+  if (typeof l === 'string' && l) return l
+  if (l && typeof l === 'object') {
+    const text = [l.en, ...Object.values(l)].find((v) => typeof v === 'string' && v)
+    if (text) return text as string
+  }
+  return String(field.name).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase())
+}
+
+/** A stored value as words: select values show their option's label, yes/no for checkboxes, dates as dates. */
+function showValue(field: Record<string, any>, value: unknown): string | null { // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (value === null || value === undefined || value === '') return null
+  const one = (v: unknown) => {
+    const option = Array.isArray(field.options) ? field.options.find((x: unknown) => (typeof x === 'object' && x ? (x as Doc).value : x) === v) : undefined
+    if (option && typeof option === 'object') return typeof option.label === 'string' ? option.label : String(v)
+    return String(v)
+  }
+  if (field.type === 'checkbox') return value ? 'Yes' : 'No'
+  if (field.type === 'date' && typeof value === 'string') {
+    const d = new Date(value)
+    return Number.isNaN(d.getTime()) ? value : d.toISOString().slice(0, 10)
+  }
+  if (Array.isArray(value)) return value.every((v) => ['string', 'number'].includes(typeof v)) ? value.map(one).join(', ') : null
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return one(value)
+  return null
+}
+
+/**
+ * What the person asked for, from the link, so the confirm page can show it before they press the button: the
+ * email, and the fields the site listed in `confirmShows`, as words. Only those: a mistyped address sends the link
+ * to a stranger. Hidden fields and fields with their own read access are never shown, even when listed. Answers
+ * meant only for checks were never stored, and what checks set for the account isn't shown. It only reads: the
+ * link still works afterwards. An unknown, used or expired link gets the same `badLink` refusal as confirming would.
+ * `countAttempt: false` is for a page that just counted one through `verifySignup`.
+ */
+export async function readSignupRequest(
+  payload: Payload,
+  input: { token?: unknown },
+  req: Req = {},
+  { countAttempt = true }: { countAttempt?: boolean } = {},
+): Promise<{ email: string; details: RequestDetail[] }> {
+  const o = signupOf(payload)
+  const r = { ...req, payload } as Req
+  if (countAttempt && !(await allowed(payload, 'verify', o.clientAddress(r) ?? 'unknown', r))) throw new SignupError('busy', 'Too many tries. Please try again in an hour.', 429)
+  const bad = new SignupError('badLink', 'This link has expired or was already used. You can ask again from the sign-up page.')
+  const token = input?.token
+  if (typeof token !== 'string' || token.length < 20 || token.length > 200) throw bad
+  const where: Where = { and: [{ tokenHash: { equals: hashToken(payload.secret, token) } }, { status: { equals: 'unverified' } }] }
+  const request = ((await payload.find({ collection: o.requests as CollectionSlug, where, limit: 1, pagination: false, ...sys, req: asReq(payload, r) })).docs as Doc[])[0]
+  if (!request || !request.tokenExpires || new Date(request.tokenExpires).getTime() < Date.now()) throw bad
+  const stored = (request.details ?? {}) as Record<string, unknown>
+  const details: RequestDetail[] = []
+  const listed = new Set(o.confirmShows)
+  for (const field of o.fields as Record<string, any>[]) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (typeof field.name !== 'string' || !listed.has(field.name) || field.admin?.hidden || field.hidden || field.access?.read) continue
+    const value = showValue(field, stored[field.name])
+    if (value !== null) details.push({ name: field.name, label: labelOf(field), value })
+  }
+  return { email: request.email as string, details }
+}
+
 export type VerifyInput = { token?: unknown; password?: unknown }
 
 /**
@@ -223,13 +288,33 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
     const existing = await payload.count({ collection: o.users as CollectionSlug, where: { email: { equals: request.email } }, overrideAccess: true, req: rq })
     if (existing.totalDocs) throw new SignupError('hasAccount', 'This address already has an account. Sign in, or set a new password if you\'ve forgotten it.', 409)
     const details = (request.details ?? {}) as Record<string, unknown>
+    // The site's checks again, now that the person is here: what changed since they asked counts.
+    let flag: string | null = (request.flag as string | null) ?? null
+    let userData = (request.userData ?? {}) as Record<string, unknown>
+    for (const check of o.confirmChecks) {
+      let result
+      try {
+        result = (await check({ data: details, email: request.email, flag, req: r, payload })) ?? {}
+      } catch (error) {
+        // Fail closed, and leave the request as it was, so the same link works once the check does.
+        payload.logger.error({ err: { name: (error as Error)?.name }, msg: 'signup: a confirm check failed, so refused for now' })
+        throw new SignupError('checkFailed', 'We couldn\'t finish this just now. Please try the same link again later.', 503)
+      }
+      if (result.refuse) {
+        // A refusal is a decline: the link stops working and asking again changes nothing for the retention time.
+        await payload.update({ collection: o.requests as CollectionSlug, id: request.id, data: { status: 'declined', decidedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null } as never, ...sys, context: internal, req: rq })
+        return { status: 'refused' as const, request, message: result.refuse }
+      }
+      if (result.flag) flag = [flag, result.flag].filter(Boolean).join('; ')
+      if (result.userData) userData = { ...userData, ...result.userData }
+    }
     const user = (await payload.create({
       collection: o.users as CollectionSlug,
-      data: { ...o.toUser(details), ...((request.userData ?? {}) as Record<string, unknown>), email: request.email, password, signupStatus: 'pending' } as never,
+      data: { ...o.toUser(details), ...userData, email: request.email, password, signupStatus: 'pending' } as never,
       ...sys,
       req: rq,
     })) as Doc
-    const verified = { ...request, status: 'pending', user: user.id, verifiedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null }
+    const verified = { ...request, flag, userData, status: 'pending', user: user.id, verifiedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null }
     if (mode === 'open') {
       const decided = await decide(payload, verified, 'approved', tx)
       queued = tx
@@ -240,6 +325,8 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
     return { status: 'pending' as const, request }
   })
 
+  // Refused at confirm: the decline is committed, then the person is told why. No account was made.
+  if (result.status === 'refused') throw new SignupError('refused', result.message)
   const name = typeof result.request.details?.name === 'string' ? result.request.details.name : undefined
   const email = result.request.email as string
   if (result.status === 'pending') await send(payload, email, () => o.emails.pending({ email, name, req: r, payload }))

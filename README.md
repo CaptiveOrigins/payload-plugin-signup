@@ -2,7 +2,7 @@
 
 Sign-up for Payload: open, approval, invite-only or closed, switched in the admin. Requests are verified by email and wait as disabled accounts for an approve or decline, with no account enumeration.
 
-**Status:** 0.1.0, not on npm yet. 28 tests pass against a real MongoDB (in memory, single-node replica set) on Payload 3.92: every mode, confirming, approving and declining, that nobody can set up an account under someone else's address, the same answer for every address, refusals that fail closed, rate limits, what staff and members can and can't see or change, rollback, and retention. An independent security read found two problems before release, both fixed and tested (see [docs/decisions.md](docs/decisions.md)). Nothing has run on a real site yet, and no real email has been sent: the tests capture email. Integration into the Captive Origins platform is next.
+**Status:** 0.1.0, not on npm yet; 0.1.1 (the confirm page's details and checks again at confirm) is on the `confirm-checks` branch. 36 tests pass against a real MongoDB (in memory, single-node replica set) on Payload 3.92: every mode, confirming, approving and declining, that nobody can set up an account under someone else's address, the same answer for every address, refusals that fail closed (at asking and at confirming), rate limits, what staff and members can and can't see or change, rollback, and retention. An independent security read found two problems before release, both fixed and tested (see [docs/decisions.md](docs/decisions.md)). Nothing has run on a real site yet, and no real email has been sent: the tests capture email. Integration into the Captive Origins platform is next.
 
 ## What it does
 
@@ -16,6 +16,7 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 - **The same answer every time:** "Thanks. Check your email to continue." That goes for a new address, one that already has an account (its owner gets an email saying so), and one that's already waiting. The form never tells anyone whether an address has an account, and each case does the same lookups, so the timing gives little away (not measured, so not promised). "Waiting for approval" is only shown at sign-in, after the password matched.
 - **Staff decide in the admin.** Open a request and set Status to Approved or Declined, or select several and use Edit. A waiting request can only be approved or declined; nothing else on it can be changed. Approving activates the account, runs your `onApprove` (roles, memberships), and emails "You're in". Declining deletes the account, which never signed in, and sends a polite email with your optional note. If `onApprove` fails, nothing changes and no email goes out.
 - **Your checks** run before anything is stored, for example an age gate. A check can refuse with a message, flag the request for staff ("minor"), or add values to the new account. Answers meant only for checks (`answers`, such as a birth month and year) are never stored. A check that breaks refuses the request. See [Checks](#checks).
+- **Checks again at confirm** (`confirmChecks`, optional): run when the person confirms, before the account is made, with the stored details and flag but never the check-only answers. A refusal declines the request; a check that breaks refuses for now and the link still works later.
 - **Rate limits** per network address, per email and site-wide. Past the email limit, nothing happens, with the same answer. Use your own limiter, or the built-in one, which stores only hashed keys. A limiter that breaks refuses.
   - The address is the first `x-forwarded-for` entry by default, which a visitor can fake behind proxies that append to it. Give `clientAddress` your host's trusted header (on Vercel, `x-real-ip`). Requests with no address share one "unknown" count.
   - The site-wide limit (200 an hour) is a cheap way for anyone to block sign-up for an hour. On a public site, use `verifyHuman` (Turnstile or similar) as well.
@@ -63,7 +64,7 @@ export default buildConfig({
 })
 ```
 
-Build the collections' indexes before first use (`signup-requests`, `signup-attempts`, and the new `signupStatus` on your users). If you build your own confirm page, ask for the password there and post `{ token, password }`; never confirm when the page loads. With a tenant plugin, pass `scopeField` and `scopeFor`, and add `signup-requests` to your tenant plugin's collections, so each site sees its own queue. The mode setting is one for the whole install.
+Build the collections' indexes before first use (`signup-requests`, `signup-attempts`, and the new `signupStatus` on your users). If you build your own confirm page, show what was asked for with `readSignupRequest`, ask for the password there and post `{ token, password }`; never confirm when the page loads. With a tenant plugin, pass `scopeField` and `scopeFor`, and add `signup-requests` to your tenant plugin's collections, so each site sees its own queue. The mode setting is one for the whole install.
 
 ## Checks
 
@@ -84,10 +85,10 @@ type Check = (args: { data; answers; email; req: PayloadRequest; payload }) =>
 | --- | --- | --- |
 | `GET /api/signup/mode` | | `{ mode, accepting, message }` |
 | `POST /api/signup/request` | `{ email, details, answers?, humanToken? }` | 202 `{ ok, message }`, or an error `{ error: { code, message } }`, either with any cookies the checks set |
-| `GET /api/signup/verify?token=` | | A small page: choose a password, then confirm |
+| `GET /api/signup/verify?token=` | | A small page: what was asked for (email and details), then choose a password and confirm |
 | `POST /api/signup/verify` | `{ token, password }` as JSON, or the page's form (`token`, `password`, `confirm`) | JSON `{ status: 'pending' or 'active' }`, or a page |
 
-Error codes: `closed`, `inviteOnly`, `email`, `password`, `passwordMismatch` (the page only), `refused`, `checkFailed`, `human`, `busy`, `badLink`, `hasAccount` (an account was made for the address since they asked). The same functions are exported for your own pages: `submitSignup`, `verifySignup`, `currentMode`.
+Error codes: `closed`, `inviteOnly`, `email`, `password`, `passwordMismatch` (the page only), `refused`, `checkFailed`, `human`, `busy`, `badLink`, `hasAccount` (an account was made for the address since they asked). The same functions are exported for your own pages: `submitSignup`, `verifySignup`, `currentMode`, and `readSignupRequest` to show what was asked for on your confirm page (it only reads; the link still works). The confirm page shows only the email and the fields you list in `confirmShows` (default none), because a mistyped address sends the link to a stranger. Hidden fields and fields with their own read access never show.
 
 ## Access
 

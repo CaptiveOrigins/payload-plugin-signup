@@ -22,6 +22,16 @@ Suite: 28 tests before, 30 after (`npx vitest run`, real Payload, in-memory Mong
 - **Mutation checks.** 9 mutations, each a Python string replace on the file, restored byte for byte (checked by SHA-256). All 9 fail the suite: truthy passing in `exactlyTrue`; errors rethrown; `isManager` without its sign-in check; the raw `o.manage` put back at requests read, update and delete and settings read and update; a truthy `signupStatus` check.
 - **Skipped.** Per-site queues under a tenant plugin come from that plugin's access, not this one, and aren't tested here.
 
+## 2026-11-10: confirm checks (K4, 0.1.1)
+
+| Promise | Test |
+| --- | --- |
+| A refusal at confirm declines: no account, the stored link hash cleared, asking again changes nothing | `checks again at confirm > declines at confirm…` |
+| A confirm check that breaks refuses for now; the request and the same link still work later | `… > refuses for now when a confirm check breaks…` |
+| Confirm checks see details and the flag, never check-only answers; their flag and user data are kept | `… > sees the stored details and flag…` |
+
+Mutation check: 5 of 5 guards caught, after adding a check that the token hash is cleared in the stored row (it first survived, because the status filter alone also kills the link). Skipped: confirm checks in open mode separately, since the checks run before the mode is looked at.
+
 ## 2026-11-10: second audit, after the security read
 
 Plugin Security's two required fixes changed the flow (the password is chosen when confirming; `access.manage` is required). Tests rewritten to match, and these added:
@@ -67,3 +77,17 @@ Gaps skipped, and why:
 - **Timing differences** between "new address" and "existing account". Both do a few database calls and send one email. Not measured, so not claimed.
 
 22 tests.
+
+## 2026-11-10: 0.1.1, the confirm page shows the request (K3)
+
+| Promise | Test |
+| --- | --- |
+| `readSignupRequest` gives the email and configured fields as words; it doesn't use up the link; check answers and check-set user data aren't shown | `the confirm page > reads the email and the details…` |
+| Used, made-up, wrong-type and expired links read as `badLink`; reads count against the verify limit | `the confirm page > reads…` and `refuses an expired link…` |
+| The page shows the request above the form, escaped; a dead link says so with no form; a refused limiter leaves the form without the summary | `the confirm page > shows the request…` |
+
+| Only listed fields show; hidden and read-restricted fields never show, even when listed | `the confirm page > shows only the fields the site listed…` |
+| A password retry keeps the summary; a mismatch counts against the verify limit; a short password doesn't count twice | `the confirm page > keeps the summary on a password retry…` |
+| The email and labels are escaped (an address written straight to the database) | `the confirm page > shows the request…` |
+
+Gaps added: the five tests above, after the security read's mutation check found the hidden-field skip and two escapes untested. A second mutation check catches all six guards. Gaps skipped: dropping `status: unverified` from the read's query isn't caught, because used links lose their token hash anyway; the condition is kept as a backup.
