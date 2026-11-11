@@ -1,6 +1,6 @@
 {
   "name": "@captiveorigins/payload-plugin-signup",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sign-up for Payload: open, approval, invite-only or closed, switched in the admin. Requests are verified by email and wait as disabled accounts for an approve or decline, with no account enumeration.",
   "homepage": "https://github.com/CaptiveOrigins/payload-plugin-signup#readme",
   "bugs": {
