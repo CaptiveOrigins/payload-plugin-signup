@@ -26,13 +26,18 @@ const body = async (req: PayloadRequest): Promise<Record<string, unknown>> => {
 
 const escape = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 /** A bare page for sites without their own: readable, keyboard-friendly, no scripts. */
-const page = (title: string, inner: string, status = 200) =>
-  new Response(
+const page = (title: string, inner: string, status = 200, setCookies: string[] = []) =>
+  withSetCookies(new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${escape(title)}</title>` +
       '<style>body{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;color:#1a1a1a;background:#fff}button{font:inherit;padding:.6rem 1.2rem;border-radius:.4rem;border:0;background:#1a4d2e;color:#fff;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid #f2a900;outline-offset:2px}dl{display:grid;grid-template-columns:max-content 1fr;gap:.25rem 1rem}dt{font-weight:600}dd{margin:0}input{font:inherit;padding:.5rem;width:100%;max-width:20rem;box-sizing:border-box}.error{color:#b00020;font-weight:600}@media (prefers-color-scheme:dark){.error{color:#ff8a80}}@media (prefers-color-scheme:dark){body{background:#121212;color:#eee}}</style>' +
       `</head><body><main><h1>${escape(title)}</h1>${inner}</main></body></html>`,
     { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } },
-  )
+  ), setCookies)
+/** Set the cookies the site's checks asked for on this response. */
+function withSetCookies(res: Response, setCookies: string[] = []) {
+  for (const cookie of setCookies) res.headers.append('Set-Cookie', cookie)
+  return res
+}
 
 /** What they asked for, so they can see it's their request before confirming. */
 const summary = (shown: { email: string; details: RequestDetail[] } | null) =>
@@ -107,11 +112,11 @@ export const signupEndpoints: Endpoint[] = [
       try {
         // The page asks twice; the JSON API leaves that to the site's own form.
         if (html && b.password !== b.confirm) throw new SignupError('passwordMismatch', 'The two passwords don\'t match. Please type the same password twice.')
-        const out = await verifySignup(req.payload, { token: b.token, password: b.password }, req)
-        if (!html) return json(out)
+        const { setCookies, ...out } = await verifySignup(req.payload, { token: b.token, password: b.password }, req)
+        if (!html) return json(out, 200, setCookies)
         return out.status === 'active'
-          ? page('You\'re in', '<p>Your email is confirmed and your account is ready. We\'ve sent you an email with the sign-in link.</p>')
-          : page('Thanks, you\'re on the list', '<p>Your email is confirmed. A person will look at your request, and we\'ll email you when it\'s decided.</p>')
+          ? page('You\'re in', '<p>Your email is confirmed and your account is ready. We\'ve sent you an email with the sign-in link.</p>', 200, setCookies)
+          : page('Thanks, you\'re on the list', '<p>Your email is confirmed. A person will look at your request, and we\'ll email you when it\'s decided.</p>', 200, setCookies)
       } catch (error) {
         if (!html) return failure(error, req)
         const message = error instanceof SignupError ? error.message : 'Something went wrong. Please try again later.'
@@ -125,7 +130,7 @@ export const signupEndpoints: Endpoint[] = [
           })
           return page('Confirm your email', `<p role="alert" class="error">${escape(message)}</p>${confirmForm(req, String(b.token ?? ''), shown)}`, 400)
         }
-        return page('That didn\'t work', `<p>${escape(message)}</p>`, error instanceof SignupError ? error.status : 500)
+        return page('That didn\'t work', `<p>${escape(message)}</p>`, error instanceof SignupError ? error.status : 500, error instanceof SignupError ? error.setCookies : [])
       }
     },
   },

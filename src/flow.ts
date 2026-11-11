@@ -239,7 +239,7 @@ export async function readSignupRequest(
   { countAttempt = true }: { countAttempt?: boolean } = {},
 ): Promise<{ email: string; details: RequestDetail[] }> {
   const o = signupOf(payload)
-  const r = { ...req, payload } as Req
+  const r = await requestFor(payload, req)
   if (countAttempt && !(await allowed(payload, 'verify', o.clientAddress(r) ?? 'unknown', r))) throw new SignupError('busy', 'Too many tries. Please try again in an hour.', 429)
   const bad = new SignupError('badLink', 'This link has expired or was already used. You can ask again from the sign-up page.')
   const token = input?.token
@@ -259,13 +259,15 @@ export async function readSignupRequest(
 }
 
 export type VerifyInput = { token?: unknown; password?: unknown }
+/** What a confirm answers. `setCookies` is there only when a confirm check asked for cookies. */
+export type VerifyResult = { status: 'pending' | 'active'; setCookies?: string[] }
 
 /**
  * Confirm the email from the link, choosing the account's password: only the person with the inbox can do this,
  * so the account belongs to the address's owner. The account is made now: waiting for approval, or (open mode)
  * active at once. If sign-up was shut since they asked, the request still waits for staff.
  */
-export async function verifySignup(payload: Payload, input: VerifyInput, req: Req = {}): Promise<{ status: 'pending' | 'active' }> {
+export async function verifySignup(payload: Payload, input: VerifyInput, req: Req = {}): Promise<VerifyResult> {
   const o = signupOf(payload)
   const r = await requestFor(payload, req)
   const address = o.clientAddress(r)
@@ -278,6 +280,9 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
   if (password.length > 256) throw new SignupError('password', 'Please choose a password of 256 characters or fewer.')
   const { mode } = await currentMode(payload)
 
+  // Cookies confirm checks ask for go out with the answer, refusals included, as at request time.
+  const setCookies: string[] = []
+  const withCookies = (error: SignupError) => (setCookies.length ? Object.assign(error, { setCookies: [...setCookies] }) : error)
   let queued: Req | null = null
   const result = await transaction(payload, r, async (tx) => {
     const rq = asReq(payload, tx)
@@ -295,10 +300,11 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
       let result
       try {
         result = (await check({ data: details, email: request.email, flag, req: r, payload })) ?? {}
+        setCookies.push(...cookiesOf(result.setCookies))
       } catch (error) {
         // Fail closed, and leave the request as it was, so the same link works once the check does.
         payload.logger.error({ err: { name: (error as Error)?.name }, msg: 'signup: a confirm check failed, so refused for now' })
-        throw new SignupError('checkFailed', 'We couldn\'t finish this just now. Please try the same link again later.', 503)
+        throw withCookies(new SignupError('checkFailed', 'We couldn\'t finish this just now. Please try the same link again later.', 503))
       }
       if (result.refuse) {
         // A refusal is a decline: the link stops working and asking again changes nothing for the retention time.
@@ -312,6 +318,7 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
       collection: o.users as CollectionSlug,
       data: { ...o.toUser(details), ...userData, email: request.email, password, signupStatus: 'pending' } as never,
       ...sys,
+      context: internal,
       req: rq,
     })) as Doc
     const verified = { ...request, flag, userData, status: 'pending', user: user.id, verifiedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null }
@@ -326,13 +333,13 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
   })
 
   // Refused at confirm: the decline is committed, then the person is told why. No account was made.
-  if (result.status === 'refused') throw new SignupError('refused', result.message)
+  if (result.status === 'refused') throw withCookies(new SignupError('refused', result.message))
   const name = typeof result.request.details?.name === 'string' ? result.request.details.name : undefined
   const email = result.request.email as string
   if (result.status === 'pending') await send(payload, email, () => o.emails.pending({ email, name, req: r, payload }))
   // Approved (open mode): `decide` queued the email; it goes now that the transaction has committed.
   else if (queued) await flushAfterCommit(queued)
-  return { status: result.status }
+  return { status: result.status, ...(setCookies.length ? { setCookies: [...setCookies] } : {}) }
 }
 
 // ---------------------------------------------------------------------------------------------

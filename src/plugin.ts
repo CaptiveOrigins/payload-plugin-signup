@@ -67,9 +67,10 @@ export const signupPlugin =
         ...auth.hooks,
         // Accounts come through sign-up (or from staff and the site's own code), never from a signed-out API call,
         // which would skip verifying and approval. The very first user is still allowed, so a new site can start.
+        // Sign-up's own create on confirming is marked internal: it runs inside a REST request too.
         beforeOperation: [
-          async ({ operation, req }) => {
-            if (operation !== 'create' || req.user || req.payloadAPI === 'local') return
+          async ({ operation, req, context }) => {
+            if (operation !== 'create' || req.user || req.payloadAPI === 'local' || context?.signupInternal === true) return
             const { totalDocs } = await req.payload.count({ collection: users as never, overrideAccess: true })
             if (totalDocs > 0) throw new Forbidden(req.t)
           },

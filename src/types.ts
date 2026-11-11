@@ -47,7 +47,7 @@ export type Check = (args: { data: Record<string, unknown>; answers: Record<stri
  * the check-only answers, which were never stored. A refusal declines the request; a check that throws refuses
  * for now and the link keeps working.
  */
-export type ConfirmCheck = (args: { data: Record<string, unknown>; email: string; flag: string | null; req: Req; payload: Payload }) => CheckResult | void | Promise<CheckResult | void>
+export type ConfirmCheck = (args: { data: Record<string, unknown>; email: string; flag: string | null; req: PayloadRequest; payload: Payload }) => CheckResult | void | Promise<CheckResult | void>
 
 export type Email = { subject: string; html: string; text: string }
 export type EmailContext = { email: string; name?: string; req: Req; payload: Payload }

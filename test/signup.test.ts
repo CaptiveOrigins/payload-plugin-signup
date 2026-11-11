@@ -716,3 +716,85 @@ describe('checks again at confirm', () => {
     expect((await users(email))[0]).toMatchObject({ role: 'member' })
   })
 })
+
+describe('confirm through the real endpoint: the request itself, and cookies (2026-11-11)', () => {
+  const confirmPost = (body: Doc, json: boolean, headers: Record<string, string> = {}) =>
+    handleEndpoints({
+      config: payload.config,
+      request: new Request('http://localhost/api/signup/verify', {
+        method: 'POST',
+        headers: { 'content-type': json ? 'application/json' : 'application/x-www-form-urlencoded', 'x-forwarded-for': '198.51.100.50', ...headers },
+        body: json ? JSON.stringify(body) : new URLSearchParams(body as Record<string, string>).toString(),
+      }),
+    })
+
+  it('hands confirm checks the request’s headers: its cookies and the client address', async () => {
+    const email = fresh()
+    await ask(email)
+    confirmSaw.length = 0
+    const res = await confirmPost({ token: tokenFrom(email), password: PW }, true, { cookie: 'made-up-preference=2', 'x-forwarded-for': '198.51.100.51' })
+    expect(res.status).toBe(200)
+    expect(confirmSaw).toHaveLength(1)
+    expect(confirmSaw[0]!.req.headers.get('cookie')).toBe('made-up-preference=2')
+    expect(confirmSaw[0]!.req.headers.get('x-forwarded-for')).toBe('198.51.100.51')
+  })
+
+  it('sets a confirm check’s cookies on the verify response, confirmed or refused, as JSON or as the page', async () => {
+    const cookie = 'made-up-confirm=1; Path=/; HttpOnly; SameSite=Lax'
+    const confirmed = fresh()
+    await ask(confirmed)
+    confirmResult = { setCookies: [cookie] }
+    const ok = await confirmPost({ token: tokenFrom(confirmed), password: PW }, true)
+    expect(ok.status).toBe(200)
+    expect(ok.headers.getSetCookie()).toEqual([cookie])
+    expect(await ok.json()).toEqual({ status: 'pending' })
+
+    const refusedJSON = fresh()
+    await ask(refusedJSON)
+    confirmResult = { refuse: 'Not this time.', setCookies: [cookie] }
+    const no = await confirmPost({ token: tokenFrom(refusedJSON), password: PW }, true)
+    expect(no.status).toBe(400)
+    expect(no.headers.getSetCookie()).toEqual([cookie])
+    expect((await no.json()).error).toEqual({ code: 'refused', message: 'Not this time.' })
+
+    const refusedPage = fresh()
+    await ask(refusedPage)
+    const page = await confirmPost({ token: tokenFrom(refusedPage), password: PW, confirm: PW }, false)
+    expect(page.status).toBe(400)
+    expect(page.headers.getSetCookie()).toEqual([cookie])
+    expect(await page.text()).toContain('Not this time.')
+
+    const broken = fresh()
+    await ask(broken)
+    confirmResult = { setCookies: ['made-up=1\r\nX-Made-Up: injected'] }
+    const bad = await confirmPost({ token: tokenFrom(broken), password: PW }, true)
+    expect(bad.status).toBe(503)
+    expect(bad.headers.getSetCookie()).toEqual([])
+    confirmResult = undefined
+    expect(await users(broken)).toEqual([])
+  })
+
+  it('hands the cookies back to a site’s own confirm page from verifySignup', async () => {
+    const email = fresh()
+    await ask(email)
+    confirmResult = { setCookies: ['made-up-confirm=2'] }
+    await expect(confirm(email)).resolves.toEqual({ status: 'pending', setCookies: ['made-up-confirm=2'] })
+    confirmResult = undefined
+  })
+
+  it('counts reads of the confirm page by the client’s address, not one shared "unknown"', async () => {
+    const email = fresh()
+    await ask(email)
+    const seen: string[] = []
+    limiter = (kind, key) => {
+      if (kind === 'verify') seen.push(key)
+      return true
+    }
+    const res = await handleEndpoints({
+      config: payload.config,
+      request: new Request(`http://localhost/api/signup/verify?token=${encodeURIComponent(tokenFrom(email))}`, { headers: { 'x-forwarded-for': '198.51.100.52' } }),
+    })
+    expect(res.status).toBe(200)
+    expect(seen).toEqual(['198.51.100.52'])
+  })
+})

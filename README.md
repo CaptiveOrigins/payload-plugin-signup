@@ -77,6 +77,7 @@ type Check = (args: { data; answers; email; req: PayloadRequest; payload }) =>
 
 - `req` is the request itself, headers and cookies included. A check written to take less (`Partial<PayloadRequest>`) still fits. Calling `submitSignup` from your own code with a partial request, or none, is fine: Payload's `createLocalReq` completes it, with empty headers.
 - `setCookies` are whole `Set-Cookie` values. `POST /api/signup/request` sets them on its response, whether the request is taken or refused. `submitSignup` hands them back as `setCookies` on its result, or on the `SignupError` it throws, so your own form can set them. Each must be a single-line string; anything else counts as a broken check and refuses (503 `checkFailed`).
+- Confirm checks (`confirmChecks`) work the same way: they get the request itself, and their `setCookies` go on the `POST /api/signup/verify` response, as JSON or the page, confirmed or refused. `verifySignup` hands them back on its result or its `SignupError`.
 - Nothing else about the response is a check's to change. Sign-up and its checks don't import each other: the check returns plain values.
 
 ## Endpoints

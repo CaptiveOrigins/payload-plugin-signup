@@ -2,6 +2,15 @@
 
 Kept by this repo's owning session, per `~/Code/CLAUDE.md`, "Test self-audits". Newest first.
 
+## 2026-11-11: after merging confirm-checks, the confirm paths too
+
+Suite: 44 tests after the merge, 48 now (`npx vitest run`).
+
+- **The gaps.** `readSignupRequest` still copied the request, so its rate limit counted every reader as "unknown". Confirm checks could return `setCookies`, but nothing set them. No test confirmed through `POST /api/signup/verify` as a real REST request, and doing so found a third bug: the guard against signed-out account creation (`payloadAPI` is `REST`) also refused Sign-up's own create, a 500 for every confirm once a site had users.
+- **The change.** `readSignupRequest` uses `requestFor`. Confirm checks get the request itself and their cookies go on the verify response (JSON and page, confirmed and refused) and on `verifySignup`'s result and error. Sign-up's own user create carries `context.signupInternal`, which the guard lets through; a signed-out REST create is still refused (the existing test).
+- **Tests added.** Through the real endpoint: confirm checks see the request's cookie and address; a confirm check's cookie on a 200, a JSON 400 refusal and a page refusal; a cookie with a line break refuses with 503, sets nothing and makes no account; `verifySignup` returns the cookies; reads of the confirm page counted by address.
+- **Mutation checks.** 7 mutations, each a Python string replace, restored exactly (checked by SHA-256). All 7 fail the suite: `readSignupRequest` copying; confirm cookies not collected; the JSON answer, the refusal and the error page each dropping them; confirm checks handed a copy; the create not marked internal.
+
 ## 2026-11-11: the request itself reaches checks; checks may set cookies
 
 Suite: 30 tests before, 36 after (`npx vitest run`). Prompted by the combo test with Age Gate (branch `combo-tests`), which found that the endpoint broke the pairing.
