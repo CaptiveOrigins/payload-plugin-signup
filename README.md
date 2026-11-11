@@ -24,6 +24,16 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 - **A human check** (Turnstile or similar) through `verifyHuman`. Nothing is wired by default; on a public site, wire one.
 - **Who manages it is yours to say, and required.** `access.manage` decides who sees and decides requests and changes the mode. The plugin won't start without it, so a site can't leave the queue open to every signed-in member. `signupStatus` is shown only to the account itself and to managers. What checks set for the account (a minor flag, say) is kept out of the queue's view.
 
+## On its own, and with others
+
+**On its own:** it needs a users auth collection, Payload's email, and your `access.manage`. Checks, roles on approval and a human check are functions you pass in. It imports no other Captive Origins plugin.
+
+**Works with:**
+- **Age Gate:** its `ageGateCheck` goes in `checks`. A too-young person is refused, a minor is flagged in the queue, and `minorUntil` is written to the new account. The birth month and year stay in `answers` and are never stored.
+- **A tenant plugin** (such as Payload's multi-tenant plugin): pass `scopeField` and `scopeFor`, and add `signup-requests` to its collections, so each site sees its own queue.
+
+**Family:** It's part of the **Identity** family (a working draft): plugins designed to sit together for accounts and access. Age Gate is the member it's wired to today.
+
 ## Install
 
 ```sh
