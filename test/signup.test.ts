@@ -38,6 +38,9 @@ const login = (email: string, password = PW) => payload.login({ collection: 'use
 let n = 0
 const fresh = () => `person${++n}@example.com`
 
+let confirmResult: CheckResult | 'throw' | undefined
+const confirmSaw: Doc[] = []
+
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
   payload = await getPayload({
@@ -80,6 +83,13 @@ beforeAll(async () => {
               checkSaw.push({ data, answers })
               if (checkResult === 'throw') throw new Error('made-up check failure')
               return checkResult
+            },
+          ],
+          confirmChecks: [
+            (args) => {
+              confirmSaw.push(args)
+              if (confirmResult === 'throw') throw new Error('made-up confirm check failure')
+              return confirmResult
             },
           ],
           onApprove: async ({ user }) => {
@@ -501,5 +511,53 @@ describe('retention', () => {
     expect((await pruneSignupRequests(payload, new Date(Date.now() + 91 * 86_400_000))).requests).toBeGreaterThanOrEqual(3)
     expect([(await requests(a)).length, (await requests(b)).length, (await requests(c)).length, (await requests(d)).length]).toEqual([0, 0, 1, 0])
     expect([(await users(a)).length, (await users(c)).length]).toEqual([1, 1])
+  })
+})
+
+describe('checks again at confirm', () => {
+  it('declines at confirm when a check now refuses: no account, a dead link, and asking again changes nothing', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    confirmResult = { refuse: 'This address can’t join right now.' }
+    await expect(verifySignup(payload, { token, password: PW }, req())).rejects.toMatchObject({ code: 'refused', message: 'This address can’t join right now.' })
+    confirmResult = undefined
+    expect((await users(email)).length).toBe(0)
+    expect((await requests(email))[0]).toMatchObject({ status: 'declined' })
+    // The link's hash is gone from the stored row, not only refused by status.
+    expect(await (payload.db as any).collections['signup-requests'].findOne({ email }).lean()).toMatchObject({ tokenHash: null, tokenExpires: null }) // eslint-disable-line @typescript-eslint/no-explicit-any
+    await expect(verifySignup(payload, { token, password: PW }, req())).rejects.toMatchObject({ code: 'badLink' })
+    const before = mail.length
+    await expect(ask(email)).resolves.toEqual({ ok: true, message: RECEIVED })
+    expect(mail.length).toBe(before)
+  })
+
+  it('refuses for now when a confirm check breaks, keeping the request and the same link for later', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    confirmResult = 'throw'
+    await expect(verifySignup(payload, { token, password: PW }, req())).rejects.toMatchObject({ code: 'checkFailed', status: 503 })
+    confirmResult = undefined
+    expect([(await users(email)).length, (await requests(email))[0]!.status]).toEqual([0, 'unverified'])
+    await expect(verifySignup(payload, { token, password: PW }, req())).resolves.toMatchObject({ status: expect.any(String) })
+    expect((await users(email)).length).toBe(1)
+  })
+
+  it('sees the stored details and flag but never the check-only answers, and adds its own flag and user data', async () => {
+    const email = fresh()
+    checkResult = { flag: 'minor' }
+    await ask(email, { answers: { birthMonth: '2015-04' } })
+    checkResult = {}
+    confirmSaw.length = 0
+    confirmResult = { flag: 'domain watched', userData: { role: 'member' } }
+    await confirm(email)
+    confirmResult = undefined
+    expect(confirmSaw).toHaveLength(1)
+    expect(confirmSaw[0]).toMatchObject({ email, flag: 'minor', data: { name: 'Made Up', country: 'US' } })
+    expect(JSON.stringify(confirmSaw[0]!.data)).not.toContain('2015-04')
+    expect('answers' in confirmSaw[0]!).toBe(false)
+    expect((await requests(email))[0]).toMatchObject({ flag: 'minor; domain watched' })
+    expect((await users(email))[0]).toMatchObject({ role: 'member' })
   })
 })

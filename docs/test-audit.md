@@ -2,6 +2,16 @@
 
 Kept by this repo's owning session, per `~/Code/CLAUDE.md`, "Test self-audits". Newest first.
 
+## 2026-11-10: confirm checks (K4, 0.1.1)
+
+| Promise | Test |
+| --- | --- |
+| A refusal at confirm declines: no account, the stored link hash cleared, asking again changes nothing | `checks again at confirm > declines at confirm…` |
+| A confirm check that breaks refuses for now; the request and the same link still work later | `… > refuses for now when a confirm check breaks…` |
+| Confirm checks see details and the flag, never check-only answers; their flag and user data are kept | `… > sees the stored details and flag…` |
+
+Mutation check: 5 of 5 guards caught, after adding a check that the token hash is cleared in the stored row (it first survived, because the status filter alone also kills the link). Skipped: confirm checks in open mode separately, since the checks run before the mode is looked at.
+
 ## 2026-11-10: second audit, after the security read
 
 Plugin Security's two required fixes changed the flow (the password is chosen when confirming; `access.manage` is required). Tests rewritten to match, and these added:

@@ -4,6 +4,7 @@ export { defaultEmails } from './emails.js'
 export { SignupError } from './util.js'
 export type {
   Check,
+  ConfirmCheck,
   CheckResult,
   Email,
   EmailContext,

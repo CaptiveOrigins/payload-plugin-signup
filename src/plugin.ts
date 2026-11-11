@@ -30,6 +30,7 @@ export const signupPlugin =
       attempts: options.slugs?.attempts ?? 'signup-attempts',
       fields: options.fields ?? [],
       checks: options.checks ?? [],
+      confirmChecks: options.confirmChecks ?? [],
       toUser: options.toUser ?? ((data) => (typeof data.name === 'string' ? { name: data.name } : {})),
       onApprove: options.onApprove,
       emails: { ...defaultEmails, ...options.emails },

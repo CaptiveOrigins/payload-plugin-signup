@@ -277,13 +277,33 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
     const existing = await payload.count({ collection: o.users as CollectionSlug, where: { email: { equals: request.email } }, overrideAccess: true, req: rq })
     if (existing.totalDocs) throw new SignupError('hasAccount', 'This address already has an account. Sign in, or set a new password if you\'ve forgotten it.', 409)
     const details = (request.details ?? {}) as Record<string, unknown>
+    // The site's checks again, now that the person is here: what changed since they asked counts.
+    let flag: string | null = (request.flag as string | null) ?? null
+    let userData = (request.userData ?? {}) as Record<string, unknown>
+    for (const check of o.confirmChecks) {
+      let result
+      try {
+        result = (await check({ data: details, email: request.email, flag, req: r, payload })) ?? {}
+      } catch (error) {
+        // Fail closed, and leave the request as it was, so the same link works once the check does.
+        payload.logger.error({ err: { name: (error as Error)?.name }, msg: 'signup: a confirm check failed, so refused for now' })
+        throw new SignupError('checkFailed', 'We couldn\'t finish this just now. Please try the same link again later.', 503)
+      }
+      if (result.refuse) {
+        // A refusal is a decline: the link stops working and asking again changes nothing for the retention time.
+        await payload.update({ collection: o.requests as CollectionSlug, id: request.id, data: { status: 'declined', decidedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null } as never, ...sys, context: internal, req: rq })
+        return { status: 'refused' as const, request, message: result.refuse }
+      }
+      if (result.flag) flag = [flag, result.flag].filter(Boolean).join('; ')
+      if (result.userData) userData = { ...userData, ...result.userData }
+    }
     const user = (await payload.create({
       collection: o.users as CollectionSlug,
-      data: { ...o.toUser(details), ...((request.userData ?? {}) as Record<string, unknown>), email: request.email, password, signupStatus: 'pending' } as never,
+      data: { ...o.toUser(details), ...userData, email: request.email, password, signupStatus: 'pending' } as never,
       ...sys,
       req: rq,
     })) as Doc
-    const verified = { ...request, status: 'pending', user: user.id, verifiedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null }
+    const verified = { ...request, flag, userData, status: 'pending', user: user.id, verifiedAt: new Date().toISOString(), tokenHash: null, tokenExpires: null }
     if (mode === 'open') {
       const decided = await decide(payload, verified, 'approved', tx)
       queued = tx
@@ -294,6 +314,8 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
     return { status: 'pending' as const, request }
   })
 
+  // Refused at confirm: the decline is committed, then the person is told why. No account was made.
+  if (result.status === 'refused') throw new SignupError('refused', result.message)
   const name = typeof result.request.details?.name === 'string' ? result.request.details.name : undefined
   const email = result.request.email as string
   if (result.status === 'pending') await send(payload, email, () => o.emails.pending({ email, name, req: r, payload }))
