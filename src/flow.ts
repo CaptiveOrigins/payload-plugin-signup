@@ -2,7 +2,7 @@ import type { CollectionSlug, Payload, Where } from 'payload'
 
 import type { ID, LimitKind, Req, SignupMode } from './types.js'
 import { MODES } from './types.js'
-import { asReq, cookiesOf, hashKey, hashToken, idOf, newToken, normalizeEmail, requestFor, signupOf, SignupError, transaction, validEmail } from './util.js'
+import { asReq, cookiesOf, withOwnResponseHeaders, hashKey, hashToken, idOf, newToken, normalizeEmail, requestFor, signupOf, SignupError, transaction, validEmail } from './util.js'
 
 type Doc = Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
 const sys = { overrideAccess: true, depth: 0 } as const
@@ -139,7 +139,7 @@ export async function submitSignup(payload: Payload, input: SignupInput, req: Re
   for (const check of o.checks) {
     let result
     try {
-      result = (await check({ data: details, answers, email, req: r, payload })) ?? {}
+      result = (await withOwnResponseHeaders(r, () => check({ data: details, answers, email, req: r, payload }))) ?? {}
       setCookies.push(...cookiesOf(result.setCookies))
     } catch (error) {
       payload.logger.error({ err: { name: (error as Error)?.name }, msg: 'signup: a site check failed, so refused' })
@@ -299,7 +299,7 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
     for (const check of o.confirmChecks) {
       let result
       try {
-        result = (await check({ data: details, email: request.email, flag, req: r, payload })) ?? {}
+        result = (await withOwnResponseHeaders(r, () => check({ data: details, email: request.email, flag, req: r, payload }))) ?? {}
         setCookies.push(...cookiesOf(result.setCookies))
       } catch (error) {
         // Fail closed, and leave the request as it was, so the same link works once the check does.
@@ -330,6 +330,11 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
     }
     await payload.update({ collection: o.requests as CollectionSlug, id: request.id, data: verified as never, ...sys, context: internal, req: rq })
     return { status: 'pending' as const, request }
+  }).catch(async (error: unknown) => {
+    // Two confirms of one link at once (a double click): the database refuses the slower one. Once the faster one
+    // has used the link, the slower one is told so, as any used link is, instead of a 500.
+    if (!(error instanceof SignupError) && (await linkUsed(payload, token))) throw bad
+    throw error
   })
 
   // Refused at confirm: the decline is committed, then the person is told why. No account was made.
@@ -340,6 +345,24 @@ export async function verifySignup(payload: Payload, input: VerifyInput, req: Re
   // Approved (open mode): `decide` queued the email; it goes now that the transaction has committed.
   else if (queued) await flushAfterCommit(queued)
   return { status: result.status, ...(setCookies.length ? { setCookies: [...setCookies] } : {}) }
+}
+
+/**
+ * Whether a link that just failed to confirm was used by another confirm. Waits up to about two seconds for that
+ * confirm to finish; a link still open after that wasn't used, and the original error stands.
+ */
+async function linkUsed(payload: Payload, token: string): Promise<boolean> {
+  const o = signupOf(payload)
+  const where: Where = { and: [{ tokenHash: { equals: hashToken(payload.secret, token) } }, { status: { equals: 'unverified' } }] }
+  for (let i = 0; i < 20; i++) {
+    try {
+      if ((await payload.count({ collection: o.requests as CollectionSlug, where, overrideAccess: true })).totalDocs === 0) return true
+    } catch {
+      return false
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return false
 }
 
 // ---------------------------------------------------------------------------------------------

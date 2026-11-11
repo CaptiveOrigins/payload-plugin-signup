@@ -2,6 +2,14 @@
 
 Kept by this repo's owning session, per `~/Code/CLAUDE.md`, "Test self-audits". Newest first.
 
+## 2026-11-11: the security read on d2e758a
+
+Suite: 49 tests before, 55 after (`npx vitest run`; the race test was written first and failed with a Mongo write conflict).
+
+- **Tests added.** A cookie with a character past `~` refuses with 503 and stores and emails nothing: on a taken request, on a refusal, and at confirm. Headers a check adds through `req.responseHeaders` don't reach the request or verify response, and a request's own list is put back untouched. With `x-real-ip`, faked first `x-forwarded-for` entries share one count; without it, the last entry counts. Two confirms of one link at once: one account, and the other gets `badLink`. Signed-out create with `signupInternal` as `'true'`, `1`, `{}` or `'yes'` is refused.
+- **Mutation checks.** 8 mutations, each a Python string replace, restored exactly (checked by SHA-256). All 8 fail the suite: the old cookie check; `x-real-ip` ignored; the first `x-forwarded-for` entry; the race not handled; a truthy internal mark; the empty list not given; the request's own list not put back; checks run without the helper.
+- **Skipped.** Without transactions (no replica set) the race isn't a database conflict; that case was accepted in the K4 read and isn't tested.
+
 ## 2026-11-11: after merging confirm-checks, the confirm paths too
 
 Suite: 44 tests after the merge, 48 now (`npx vitest run`).

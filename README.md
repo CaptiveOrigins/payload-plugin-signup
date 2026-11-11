@@ -2,7 +2,7 @@
 
 Sign-up for Payload: open, approval, invite-only or closed, switched in the admin. Requests are verified by email and wait as disabled accounts for an approve or decline, with no account enumeration.
 
-**Status:** 0.1.0, not on npm yet; 0.1.1 (the confirm page's details and checks again at confirm) is on the `confirm-checks` branch. 36 tests pass against a real MongoDB (in memory, single-node replica set) on Payload 3.92: every mode, confirming, approving and declining, that nobody can set up an account under someone else's address, the same answer for every address, refusals that fail closed (at asking and at confirming), rate limits, what staff and members can and can't see or change, rollback, and retention. An independent security read found two problems before release, both fixed and tested (see [docs/decisions.md](docs/decisions.md)). Nothing has run on a real site yet, and no real email has been sent: the tests capture email. Integration into the Captive Origins platform is next.
+**Status:** 0.1.0 is on npm. 0.1.1 (the confirm page's details, checks again at confirm, the request itself handed to checks, and cookies from checks) is on main, not released yet. 55 tests pass against a real MongoDB (in memory, single-node replica set) on Payload 3.92: every mode, confirming, approving and declining, that nobody can set up an account under someone else's address, the same answer for every address, refusals that fail closed (at asking and at confirming), rate limits (including through the real endpoints), what staff and members can and can't see or change, rollback, and retention. An independent security read found two problems before release, both fixed and tested (see [docs/decisions.md](docs/decisions.md)). Nothing has run on a real site yet, and no real email has been sent: the tests capture email. Integration into the Captive Origins platform is next.
 
 ## What it does
 
@@ -18,7 +18,7 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 - **Your checks** run before anything is stored, for example an age gate. A check can refuse with a message, flag the request for staff ("minor"), or add values to the new account. Answers meant only for checks (`answers`, such as a birth month and year) are never stored. A check that breaks refuses the request. See [Checks](#checks).
 - **Checks again at confirm** (`confirmChecks`, optional): run when the person confirms, before the account is made, with the stored details and flag but never the check-only answers. A refusal declines the request; a check that breaks refuses for now and the link still works later.
 - **Rate limits** per network address, per email and site-wide. Past the email limit, nothing happens, with the same answer. Use your own limiter, or the built-in one, which stores only hashed keys. A limiter that breaks refuses.
-  - The address is the first `x-forwarded-for` entry by default, which a visitor can fake behind proxies that append to it. Give `clientAddress` your host's trusted header (on Vercel, `x-real-ip`). Requests with no address share one "unknown" count.
+  - Which address counts: by default, `x-real-ip` when the request has it (Vercel sets it), otherwise the last `x-forwarded-for` entry, the one added by the proxy in front of the site. That's only right behind one trusted proxy that sets one of these. Behind several proxies, a CDN with its own header, or no proxy at all (where a visitor can send any of these headers), pass `clientAddress` with the header your host vouches for. Requests with no address share one "unknown" count.
   - The site-wide limit (200 an hour) is a cheap way for anyone to block sign-up for an hour. On a public site, use `verifyHuman` (Turnstile or similar) as well.
 - **No back door:** once a site has users, an account can't be created by a signed-out API call. Accounts come through sign-up, from staff, or from your own code.
 - **Retention:** requests decided, abandoned or never confirmed are deleted after 90 days (`retentionDays`), with any account that was never confirmed. Waiting requests stay until someone decides them. Run `pruneSignupRequests(payload)` daily.
@@ -30,7 +30,7 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 **On its own:** it needs a users auth collection, Payload's email, and your `access.manage`. Checks, roles on approval and a human check are functions you pass in. It imports no other Captive Origins plugin.
 
 **Works with:**
-- **Age Gate:** its `ageGateCheck` goes in `checks`. A too-young person is refused, a minor is flagged in the queue, and `minorUntil` is written to the new account. The birth month and year stay in `answers` and are never stored. Its "stay blocked" cookie comes back through `setCookies` (Age Gate's next release; 0.1.x set it on `req.responseHeaders`, which Payload also sends).
+- **Age Gate:** its `ageGateCheck` goes in `checks`. A too-young person is refused, a minor is flagged in the queue, and `minorUntil` is written to the new account. The birth month and year stay in `answers` and are never stored. Its "stay blocked" cookie comes back through `setCookies`, from Age Gate's next release. Age Gate 0.1.x set it on `req.responseHeaders`, which Sign-up doesn't pass on (see [Checks](#checks)), so with 0.1.x the cookie is not set.
 - **A tenant plugin** (such as Payload's multi-tenant plugin): pass `scopeField` and `scopeFor`, and add `signup-requests` to its collections, so each site sees its own queue.
 
 **Family:** It's part of the **Identity** family (a working draft): plugins designed to sit together for accounts and access. Age Gate is the member it's wired to today.
@@ -76,9 +76,9 @@ type Check = (args: { data; answers; email; req: PayloadRequest; payload }) =>
 ```
 
 - `req` is the request itself, headers and cookies included. A check written to take less (`Partial<PayloadRequest>`) still fits. Calling `submitSignup` from your own code with a partial request, or none, is fine: Payload's `createLocalReq` completes it, with empty headers.
-- `setCookies` are whole `Set-Cookie` values. `POST /api/signup/request` sets them on its response, whether the request is taken or refused. `submitSignup` hands them back as `setCookies` on its result, or on the `SignupError` it throws, so your own form can set them. Each must be a single-line string; anything else counts as a broken check and refuses (503 `checkFailed`).
+- `setCookies` are whole `Set-Cookie` values. `POST /api/signup/request` sets them on its response, whether the request is taken or refused. `submitSignup` hands them back as `setCookies` on its result, or on the `SignupError` it throws, so your own form can set them. Each must be printable ASCII (space to `~`), as cookie syntax allows; anything else counts as a broken check and refuses (503 `checkFailed`) before anything is stored or emailed.
 - Confirm checks (`confirmChecks`) work the same way: they get the request itself, and their `setCookies` go on the `POST /api/signup/verify` response, as JSON or the page, confirmed or refused. `verifySignup` hands them back on its result or its `SignupError`.
-- Nothing else about the response is a check's to change. Sign-up and its checks don't import each other: the check returns plain values.
+- Nothing else about the response is a check's to change. Each check runs with an empty `req.responseHeaders` of its own, and Sign-up throws that list away afterwards, so headers a check adds there never reach the response. The request's own list (an auth strategy's, say) is put back untouched. Sign-up and its checks don't import each other: the check returns plain values.
 
 ## Endpoints
 

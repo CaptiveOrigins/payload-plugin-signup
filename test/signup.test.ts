@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { buildConfig, getPayload, handleEndpoints, type Payload, type PayloadRequest } from 'payload'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
+import { withOwnResponseHeaders } from '../src/util.js'
 import { pruneSignupRequests, readSignupRequest, RECEIVED, signupPlugin, submitSignup, verifySignup, type CheckResult, type LimitKind } from '../src/index.js'
 
 // Made-up people at example.com, on a throwaway in-memory database.
@@ -41,6 +42,14 @@ let n = 0
 const fresh = () => `person${++n}@example.com`
 
 let confirmResult: CheckResult | 'throw' | undefined
+/** When true, checks try to add headers to the response through `req.responseHeaders`. */
+let sneakHeaders = false
+const sneak = (r: PayloadRequest) => {
+  if (!sneakHeaders) return
+  r.responseHeaders = new Headers(r.responseHeaders)
+  r.responseHeaders.append('X-Made-Up', 'sneaked')
+  r.responseHeaders.append('Set-Cookie', 'sneaked=1')
+}
 const confirmSaw: Doc[] = []
 
 beforeAll(async () => {
@@ -83,6 +92,7 @@ beforeAll(async () => {
           checks: [
             ({ data, answers, req: r }) => {
               checkSaw.push({ data, answers, cookie: r.headers.get('cookie'), address: r.headers.get('x-forwarded-for') })
+              sneak(r)
               if (checkResult === 'throw') throw new Error('made-up check failure')
               return checkResult
             },
@@ -90,6 +100,7 @@ beforeAll(async () => {
           confirmChecks: [
             (args) => {
               confirmSaw.push(args)
+              sneak(args.req)
               if (confirmResult === 'throw') throw new Error('made-up confirm check failure')
               return confirmResult
             },
@@ -122,6 +133,7 @@ afterAll(async () => {
 })
 
 beforeEach(async () => {
+  sneakHeaders = false
   checkResult = {}
   checkSaw = []
   approveThrows = false
@@ -796,5 +808,82 @@ describe('confirm through the real endpoint: the request itself, and cookies (20
     })
     expect(res.status).toBe(200)
     expect(seen).toEqual(['198.51.100.52'])
+  })
+})
+
+describe('two confirms of one link at once (2026-11-11)', () => {
+  it('makes one account; the other confirm gets badLink, as a used link does, never a 500', async () => {
+    const email = fresh()
+    await ask(email)
+    const token = tokenFrom(email)
+    const both = await Promise.allSettled([verifySignup(payload, { token, password: PW }, req()), verifySignup(payload, { token, password: PW }, req())])
+    const won = both.filter((x) => x.status === 'fulfilled')
+    const lost = both.filter((x): x is PromiseRejectedResult => x.status === 'rejected')
+    expect(won).toHaveLength(1)
+    expect(lost).toHaveLength(1)
+    expect(lost[0]!.reason).toMatchObject({ code: 'badLink', status: 400 })
+    expect(await users(email)).toHaveLength(1)
+  })
+})
+
+describe('checks can’t reach the response except through setCookies (2026-11-11)', () => {
+  const post = (path: string, body: Doc) =>
+    handleEndpoints({
+      config: payload.config,
+      request: new Request(`http://localhost/api/signup/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-real-ip': '198.51.100.70' }, body: JSON.stringify(body) }),
+    })
+
+  it('drops headers a check adds through req.responseHeaders, at request and at confirm', async () => {
+    const email = fresh()
+    sneakHeaders = true
+    const asked = await post('request', { email, details: { name: 'Made Up', country: 'US' } })
+    expect(asked.status).toBe(202)
+    expect(asked.headers.get('x-made-up')).toBeNull()
+    expect(asked.headers.getSetCookie()).toEqual([])
+    const confirmed = await post('verify', { token: tokenFrom(email), password: PW })
+    expect(confirmed.status).toBe(200)
+    expect(confirmed.headers.get('x-made-up')).toBeNull()
+    expect(confirmed.headers.getSetCookie()).toEqual([])
+  })
+
+  it('gives a check an empty list of its own and puts the request’s own back untouched (an auth strategy’s, say)', async () => {
+    const own = new Headers({ 'X-Made-Up-Auth': 'kept' })
+    const r = { responseHeaders: own } as PayloadRequest
+    await withOwnResponseHeaders(r, () => {
+      expect(r.responseHeaders).not.toBe(own)
+      expect([...r.responseHeaders!.keys()]).toEqual([])
+      r.responseHeaders!.append('X-Made-Up', 'sneaked')
+    })
+    expect(r.responseHeaders).toBe(own)
+    expect([...own.keys()]).toEqual(['x-made-up-auth'])
+    const bare = {} as PayloadRequest
+    await withOwnResponseHeaders(bare, () => void (bare.responseHeaders = new Headers({ 'X-Made-Up': 'sneaked' })))
+    expect('responseHeaders' in bare).toBe(false)
+  })
+
+  it('refuses a cookie with any character past printable ASCII before anything is stored or emailed: taken, refused, or at confirm', async () => {
+    const taken = fresh()
+    checkResult = { setCookies: ['made-up=caf\u20ac'] }
+    const a = await post('request', { email: taken, details: { name: 'Made Up', country: 'US' } })
+    expect(a.status).toBe(503)
+    expect((await a.json()).error.code).toBe('checkFailed')
+    expect([(await requests(taken)).length, mailTo(taken).length]).toEqual([0, 0])
+
+    const refused = fresh()
+    checkResult = { refuse: 'Not this time.', setCookies: ['made-up=\u00e9'] }
+    const b = await post('request', { email: refused, details: { name: 'Made Up', country: 'US' } })
+    expect(b.status).toBe(503)
+    expect(b.headers.getSetCookie()).toEqual([])
+    expect([(await requests(refused)).length, mailTo(refused).length]).toEqual([0, 0])
+
+    checkResult = {}
+    const atConfirm = fresh()
+    await ask(atConfirm)
+    const sent = mailTo(atConfirm).length
+    confirmResult = { setCookies: ['made-up=\u20ac'] }
+    const c = await post('verify', { token: tokenFrom(atConfirm), password: PW })
+    confirmResult = undefined
+    expect(c.status).toBe(503)
+    expect([(await users(atConfirm)).length, (await requests(atConfirm))[0]!.status, mailTo(atConfirm).length]).toEqual([0, 'unverified', sent])
   })
 })

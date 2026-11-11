@@ -73,6 +73,27 @@ describe('the built-in rate limiter', () => {
   })
 })
 
+describe('the default client address (2026-11-11)', () => {
+  const post = (email: string, headers: Record<string, string>) =>
+    handleEndpoints({
+      config: payload.config,
+      request: new Request('http://localhost/api/signup/request', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ email, details: { name: 'Made Up' } }) }),
+    })
+
+  it('uses x-real-ip when present, so a faked first x-forwarded-for entry makes no new count', async () => {
+    const real = { 'x-real-ip': '198.51.100.80' }
+    expect((await post('g1@example.com', { ...real, 'x-forwarded-for': '203.0.113.1' })).status).toBe(202)
+    expect((await post('g2@example.com', { ...real, 'x-forwarded-for': '203.0.113.2' })).status).toBe(202)
+    expect((await post('g3@example.com', { ...real, 'x-forwarded-for': '203.0.113.3, 198.51.100.80' })).status).toBe(429)
+  })
+
+  it('without x-real-ip, uses the last x-forwarded-for entry, the one the proxy added, not the visitor’s first', async () => {
+    expect((await post('h1@example.com', { 'x-forwarded-for': '203.0.113.11, 198.51.100.81' })).status).toBe(202)
+    expect((await post('h2@example.com', { 'x-forwarded-for': '203.0.113.12, 198.51.100.81' })).status).toBe(202)
+    expect((await post('h3@example.com', { 'x-forwarded-for': '203.0.113.13, 198.51.100.81' })).status).toBe(429)
+  })
+})
+
 describe('the email link', () => {
   it('keeps the form, with a message, when the two passwords differ, and makes nothing', async () => {
     await ask('e@example.com', '198.51.100.10')
@@ -100,5 +121,15 @@ describe('the email link', () => {
 describe('accounts only through sign-up', () => {
   it('refuses a signed-out API create once the site has users, even where the collection allows creating', async () => {
     await expect(payload.create({ collection: 'users', data: { email: 'sneaky@example.com', password: 'a long password' } as never, overrideAccess: false, req: { payloadAPI: 'REST' } as never })).rejects.toThrow()
+  })
+
+  it('lets only Sign-up’s exact internal mark through, never a look-alike (2026-11-11)', async () => {
+    for (const mark of ['true', 1, {}, 'yes']) {
+      await expect(
+        payload.create({ collection: 'users', data: { email: 'lookalike@example.com', password: 'a long password' } as never, overrideAccess: false, context: { signupInternal: mark }, req: { payloadAPI: 'REST' } as never }),
+        String(mark),
+      ).rejects.toThrow()
+    }
+    expect((await payload.find({ collection: 'users', where: { email: { equals: 'lookalike@example.com' } }, overrideAccess: true })).totalDocs).toBe(0)
   })
 })

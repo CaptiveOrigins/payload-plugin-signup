@@ -36,10 +36,16 @@ export const idOf = (v: unknown): ID | null => {
   return v as ID
 }
 
-export const firstAddress = (req: Req): string | null => {
+/**
+ * The default client address: `x-real-ip` when present (set by the host's proxy, such as Vercel's), else the last
+ * `x-forwarded-for` entry, which is the one a single trusted proxy appended. Earlier entries come from the visitor
+ * and can say anything. Behind any other arrangement of proxies, pass your own `clientAddress`.
+ */
+export const defaultClientAddress = (req: Req): string | null => {
   const h = req.headers
-  const forwarded = h?.get?.('x-forwarded-for')?.split(',')[0]?.trim()
-  return forwarded || h?.get?.('x-real-ip')?.trim() || null
+  const real = h?.get?.('x-real-ip')?.trim()
+  if (real) return real
+  return h?.get?.('x-forwarded-for')?.split(',').at(-1)?.trim() || null
 }
 
 /** Run `fn` in a transaction, or inside the caller's when `req` already has one. */
@@ -73,12 +79,33 @@ export async function requestFor(payload: Payload, req: Req = {}): Promise<Paylo
   return createLocalReq({ req }, payload)
 }
 
-/** The `Set-Cookie` values a check returned. Anything but a list of single-line strings is a broken check. */
+/**
+ * The `Set-Cookie` values a check returned. Only printable ASCII (space to `~`), as RFC 6265's cookie syntax allows:
+ * anything else (a line break, a control character, any character past `~`) is a broken check, and refuses before
+ * anything is stored or emailed, rather than failing later when the header is set.
+ */
 export function cookiesOf(value: unknown): string[] {
   if (value === undefined || value === null) return []
-  if (!Array.isArray(value) || !value.every((c) => typeof c === 'string' && c.length > 0 && !/[\x00-\x1f\x7f]/.test(c)))
-    throw new Error('Sign-up: a check returned setCookies that are not a list of single-line strings.')
+  if (!Array.isArray(value) || !value.every((c) => typeof c === 'string' && /^[\x20-\x7e]+$/.test(c)))
+    throw new Error('Sign-up: a check returned setCookies that are not a list of printable ASCII strings.')
   return [...value]
+}
+
+/**
+ * Run a check with a response-header list of its own, so it can't add headers to Sign-up's response through
+ * `req.responseHeaders` (Payload's router sends that list). Cookies go through `setCookies`, which are checked.
+ * The request's own list (an auth strategy's refreshed cookie, say) is put back as it was.
+ */
+export async function withOwnResponseHeaders<T>(req: PayloadRequest, fn: () => T | Promise<T>): Promise<T> {
+  const had = Object.prototype.hasOwnProperty.call(req, 'responseHeaders')
+  const own = req.responseHeaders
+  req.responseHeaders = new Headers()
+  try {
+    return await fn()
+  } finally {
+    if (had) req.responseHeaders = own
+    else delete req.responseHeaders
+  }
 }
 
 const escape = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)

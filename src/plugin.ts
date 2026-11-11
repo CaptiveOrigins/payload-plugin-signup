@@ -5,7 +5,7 @@ import { defaultEmails } from './emails.js'
 import { signupEndpoints } from './endpoints.js'
 import { flushAfterCommit } from './flow.js'
 import { MODES, type ResolvedSignup, type SignupMode, type SignupPluginOptions } from './types.js'
-import { firstAddress } from './util.js'
+import { defaultClientAddress } from './util.js'
 
 /** The site's lock on the mode: an option, else `SIGNUP_MODE`. An unknown value locks it closed (fail shut). */
 const lockedMode = (forced: SignupPluginOptions['forceMode']): SignupMode | null => {
@@ -37,7 +37,7 @@ export const signupPlugin =
       urls: options.urls,
       rateLimit: options.rateLimit,
       limits: { address: 5, email: 3, site: 200, verify: 20, ...options.limits },
-      clientAddress: options.clientAddress ?? firstAddress,
+      clientAddress: options.clientAddress ?? defaultClientAddress,
       verifyHuman: options.verifyHuman,
       manage: options?.access?.manage as Access,
       scopeField: options.scopeField,
