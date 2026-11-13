@@ -38,11 +38,11 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 ## Install
 
 ```sh
-npm install @captiveorigins/payload-plugin-signup
+npm install @extantape/payload-plugin-signup
 ```
 
 ```ts
-import { signupPlugin } from '@captiveorigins/payload-plugin-signup'
+import { signupPlugin } from '@extantape/payload-plugin-signup'
 
 export default buildConfig({
   plugins: [
