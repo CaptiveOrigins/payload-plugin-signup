@@ -2,10 +2,10 @@
 
 Dated decisions for this repo, newest last.
 
-- 2026-11-10: created from the ops starter kit, area `plugins`.
-- 2026-11-10 (owner, relayed verbatim by Helm, about 5:10 PM MST): "Thoughts on changing invite only to requesting an account? Then they could provide the required info we need (in the format we need), but it creates a disabled account. We can then okay whoever we want in until Friday, at which time we turn off the request account thing. Request account feature + guardianship account stuff should both be their own plugins id imagine". He chose "Yes, as a plugin now" and, for retention, "90 days".
-- 2026-11-10 (owner, relayed by Platform, about 6:15 PM MST): "Don't worry about the days, just about doing it right". Monday 11-16 and Friday 11-20 are targets; anything not right by the Sunday freeze slips.
-- 2026-11-10: named Sign-up (`payload-plugin-signup`) rather than Access Requests, because it runs all four modes, not only requests. The owner confirmed it (relayed verbatim by Helm, about 5:25 PM MST): "Sign-up (Recommended)". He also agreed the design calls below.
+- 2026-11-10: created from the standard repo starter kit.
+- 2026-11-10 (owner): change invite-only to requesting an account. People give the details the site needs, in its format, and get a disabled account. Staff approve whoever they want until Friday, when requests are turned off. Account requests and guardianship should each be their own plugin. He chose "Yes, as a plugin now" and, for retention, "90 days".
+- 2026-11-10 (owner): doing it right matters more than the dates. Monday 11-16 and Friday 11-20 are targets; anything not right by the Sunday freeze slips.
+- 2026-11-10: named Sign-up (`payload-plugin-signup`) rather than Access Requests, because it runs all four modes, not only requests. The owner confirmed it the same day. He also agreed the design calls below.
 - 2026-11-10: design calls.
   - People choose their password at sign-up. The account exists from verification, disabled, and only active accounts sign in.
   - "Waiting for approval" is said only after the password matched (Payload runs beforeLogin after the password check).
@@ -16,9 +16,9 @@ Dated decisions for this repo, newest last.
   - Approved requests are deleted after 90 days too, since the account is then the record.
   - The email link shows a button instead of verifying on open, because mail scanners open links.
   - Once a site has users, signed-out API account creation is refused.
-- 2026-11-10 (with Platform): the age gate is its own plugin (Platform builds it). Sign-up only runs the checks it's given, and passes check-only `answers` that are never stored.
-- 2026-11-10 (owner, relayed verbatim by Helm, about 5:35 PM MST), a standing rule: "they should be their own agnostic plugins that aren't dependent on each other but work seamlessly. That should basically be our motto" and "Always build it with the best architecture first, never just the fastest". Sign-up follows it: the age gate is a separate plugin, plugged in through `checks`.
-- 2026-11-10 (Plugin Security's independent read, ledger 53c8805e1452), two required fixes, both done:
+- 2026-11-10 (with the first site): the age gate is its own plugin, built separately. Sign-up only runs the checks it's given, and passes check-only `answers` that are never stored.
+- 2026-11-10 (owner), a standing rule: plugins are agnostic and independent of each other, and work well together. Always build with the best architecture first, never just the fastest. Sign-up follows it: the age gate is a separate plugin, plugged in through `checks`.
+- 2026-11-10 (independent security read), two required fixes, both done:
   - **Who manages sign-up:** the default was any signed-in user, so any member (a child included) could read the queue, decide requests and open sign-up. Now `access.manage` is required, and the plugin won't start without it. `signupStatus` is readable only by the account and by managers, and checks' `userData` is never shown in the queue.
   - **Setting up an account under someone else's address:** the password used to be chosen when asking, so whoever asked with a parent's address got the account once the parent pressed Confirm. Now nothing is made when asking. The person with the inbox chooses the password on the confirm page, and the account is made then. This replaces "people choose their password at sign-up" above. Unconfirmed requests no longer have accounts, so there's no `unverified` account status.
   - Also taken from its recommendations:
@@ -26,28 +26,20 @@ Dated decisions for this repo, newest last.
     - requests with no address count under "unknown";
     - the README notes the spoofable `x-forwarded-for` default and the cheap site-wide block, and suggests `verifyHuman` on public sites.
 
-## 2026-11-10: decision feed acknowledged (ops/decisions/all.md and the area feed)
+## 2026-11-10: standing rules from the owner
 
-Settled decisions from the owner, through Helm's feed. The feed holds the owner's exact words.
+- Build it right: agnostic plugins with optional adapters, best architecture first. This repo imports no other plugin from this set.
+- This repo is public, with limits on CI minutes.
+- The name "Sign-up" is approved (2026-11-10).
+- No plugin-family tags yet. None are in `package.json` keywords.
 
-- **D1** Settled decisions arrive through the feed and are acted on, not re-argued.
-- **D2** Build it right: agnostic plugins with optional adapters, best architecture first. This repo imports no other plugin from this set.
-- **D3** Owner steps and tests go to `~/Code/ops/inbox/` per `ops/rules/owner-items.md`, never straight to needs-you.md or tests.md.
-- **D4** Priority: Docker media, Minecraft server, then all the site work.
-- **D5** No private repos to save CI minutes. This repo is public, with the Actions-minutes rules.
-- **D6, D21** Plugin names need the owner's OK before work starts (ops/plugin-names.md). "Sign-up" is approved (2026-11-10).
-- **D7** No launch dates: work follows the priority list in the ops timeline. A freeze point is cut only when the owner says so.
-- **D8** Seed World hears about every collection-structure change ahead of time, with versions, and audits when it lands.
-- **D12** No plugin-family tags yet. None are in `package.json` keywords.
-- Not for this repo: D9 (PM doc), D10 (tour before studbook), D11 (kids decide on guardian suggestions), D14 (plan B), D15 (Husbandry.Pro link), D16 (both views).
+## 2026-11-10: 0.1.1, show the request on the confirm page
 
-## 2026-11-10: 0.1.1, show the request on the confirm page (K3)
-
-- Asked for in the Site lead's review: people should see what they're confirming. `readSignupRequest` only reads, so mail scanners opening the link stay harmless, and a dead link is reported before the password form.
-- It shows only the fields a site lists in `confirmShows`, none by default, and never hidden fields, fields with read access, `userData` or check answers. The security read on c533927 (a subagent, using Plugin Security's checklist) found the first version showed every field. A child who mistypes their address would have shown their details to the owner of that inbox. Kids first, so it's opt-in. The first site should list `name` at most.
-- It's on the `confirm-details` branch, not main, because the owner's N96 publishes main as 0.1.0, the code Plugin Security approved (8feec5d). 0.1.1 merges and goes through the staged Release workflow after 0.1.0 is on npm, with a pre-publish security read first (K34).
-- 2026-11-10 (Plugins Lead, K4): checks can run again at confirm through a separate, optional `confirmChecks`, not by re-running `checks`: check-only answers are never stored, so the request-time checks couldn't see them again. A refusal at confirm declines the request (committed before the person is told); a check that throws refuses for now and leaves the request and its link as they were.
-- 2026-11-10 (Plugins Lead, K4 security read, approved at 9bb0dfd): two edge cases are accepted and fail safe. Without transactions (no replica set), two confirms at the same moment with a check that answers differently could let the second overwrite the first's decline; and inside a caller's own transaction the decline commits only when the caller commits. Neither makes an account past a refusal. Site checks at asking now log only the error's name, as confirm checks do, so a check's error text (which could carry an answer) never reaches logs.
+- Asked for in the first site's review: people should see what they're confirming. `readSignupRequest` only reads, so mail scanners opening the link stay harmless, and a dead link is reported before the password form.
+- It shows only the fields a site lists in `confirmShows`, none by default, and never hidden fields, fields with read access, `userData` or check answers. The security read on c533927 (a subagent, using the plugin security checklist) found the first version showed every field. A child who mistypes their address would have shown their details to the owner of that inbox. Kids first, so it's opt-in. The first site should list `name` at most.
+- It's on the `confirm-details` branch, not main, because the owner's publish of main is 0.1.0, the code the security read approved (8feec5d). 0.1.1 merges and goes through the staged Release workflow after 0.1.0 is on npm, with a pre-publish security read first.
+- 2026-11-10: checks can run again at confirm through a separate, optional `confirmChecks`, not by re-running `checks`: check-only answers are never stored, so the request-time checks couldn't see them again. A refusal at confirm declines the request (committed before the person is told); a check that throws refuses for now and leaves the request and its link as they were.
+- 2026-11-10 (security read, approved at 9bb0dfd): two edge cases are accepted and fail safe. Without transactions (no replica set), two confirms at the same moment with a check that answers differently could let the second overwrite the first's decline; and inside a caller's own transaction the decline commits only when the caller commits. Neither makes an account past a refusal. Site checks at asking now log only the error's name, as confirm checks do, so a check's error text (which could carry an answer) never reaches logs.
 
 ## 2026-11-11: which address the rate limits count (security read on d2e758a)
 
