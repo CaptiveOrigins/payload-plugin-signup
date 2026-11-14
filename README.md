@@ -2,7 +2,7 @@
 
 Sign-up for Payload: open, approval, invite-only or closed, switched in the admin. Requests are verified by email and wait as disabled accounts for an approve or decline, with no account enumeration.
 
-**Status:** 0.1.0 is on npm. 0.1.1 (the confirm page's details, checks again at confirm, the request itself handed to checks, and cookies from checks) is on main, not released yet. 55 tests pass against a real MongoDB (in memory, single-node replica set) on Payload 3.92: every mode, confirming, approving and declining, that nobody can set up an account under someone else's address, the same answer for every address, refusals that fail closed (at asking and at confirming), rate limits (including through the real endpoints), what staff and members can and can't see or change, rollback, and retention. An independent security read found two problems before release, both fixed and tested (see [docs/decisions.md](docs/decisions.md)). Nothing has run on a real site yet, and no real email has been sent: the tests capture email. Integration into the Captive Origins platform is next.
+**Status:** 0.1.0 is on npm. 0.1.1 (the confirm page's details, checks again at confirm, the request itself handed to checks, and cookies from checks) is on main, not released yet. 55 tests pass against a real MongoDB (in memory, single-node replica set) on Payload 3.92: every mode, confirming, approving and declining, that nobody can set up an account under someone else's address, the same answer for every address, refusals that fail closed (at asking and at confirming), rate limits (including through the real endpoints), what staff and members can and can't see or change, rollback, and retention. An independent security read found two problems before release, both fixed and tested (see [docs/decisions.md](docs/decisions.md)). Nothing has run on a real site yet, and no real email has been sent: the tests capture email. Integration into a real site is next.
 
 ## What it does
 
@@ -27,7 +27,7 @@ Sign-up for Payload: open, approval, invite-only or closed, switched in the admi
 
 ## On its own, and with others
 
-**On its own:** it needs a users auth collection, Payload's email, and your `access.manage`. Checks, roles on approval and a human check are functions you pass in. It imports no other Captive Origins plugin.
+**On its own:** it needs a users auth collection, Payload's email, and your `access.manage`. Checks, roles on approval and a human check are functions you pass in. It doesn't depend on any other plugin.
 
 **Works with:**
 - **Age Gate:** its `ageGateCheck` goes in `checks`. A too-young person is refused, a minor is flagged in the queue, and `minorUntil` is written to the new account. The birth month and year stay in `answers` and are never stored. Its "stay blocked" cookie comes back through `setCookies`, from Age Gate's next release. Age Gate 0.1.x set it on `req.responseHeaders`, which Sign-up doesn't pass on (see [Checks](#checks)), so with 0.1.x the cookie is not set.
